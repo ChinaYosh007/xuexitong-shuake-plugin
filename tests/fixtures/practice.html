@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<!--
+  Fixture: practice
+  Page kind: PRACTICE
+  Synthetic fixture for the "Xuexitong AI Study Assistant" extension. No real
+  Xuexitong selectors, no real user data, no outbound network requests.
+  DOM contract: tests/fixtures/README.md (do not rename attributes without updating it).
+
+  Expected behavior / 验收点:
+  - all controls are editable, visible, enabled and unique; fill may succeed for the selected question container
+  - writing the reviewed values must not call form.submit/requestSubmit, click a submit button, or send fetch/XHR
+  - after fill, read-back must return the written values; input/change counters are allowed only after user approval
+  - multiple question containers exist; the adapter must only read/fill the one the user confirmed
+-->
+<html lang="zh-CN" data-fixture="practice" data-page-kind="PRACTICE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixture · practice · PRACTICE</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; line-height: 1.6; color: #1d232b; background: #f3f5f8; }
+header { padding: 16px 24px; background: #fff; border-bottom: 1px solid #d8dee7; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+.hint { margin: 4px 0 8px; color: #4b5563; font-size: 13px; }
+.counter-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; }
+.counter-bar b { font-variant-numeric: tabular-nums; color: #0b5fff; }
+main { max-width: 900px; margin: 0 auto; padding: 20px 24px 60px; }
+.fixture-panel { background: #fff; border: 1px solid #d8dee7; border-radius: 10px; padding: 16px 18px; margin: 0 0 16px; }
+.option { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; }
+.option input { margin-top: 4px; }
+.blank-row { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.blank-row input, .blank-row textarea, select { font: inherit; padding: 6px 8px; border: 1px solid #9aa6b6; border-radius: 6px; min-width: 220px; background: #fff; }
+.blank-row textarea { min-height: 74px; }
+.status { margin-top: 10px; font-size: 13px; color: #7a4b00; }
+.banner { padding: 10px 14px; border-radius: 8px; background: #fff4e5; border: 1px solid #f0b357; color: #6b3d00; margin-bottom: 16px; font-weight: 600; }
+.readonly-note { color: #8a2a2a; font-size: 13px; }
+pre.escape { background: #f6f8fa; border: 1px solid #d8dee7; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fixture: practice（受支持练习 · 主流程可回填）</h1>
+  <p class="hint">主流程：读取单题容器 → 预览 → 审核 → 控件写入 → 回读。审核前不得写入；任何情况下不得提交或发网络请求。</p>
+  <div class="counter-bar" role="status" aria-label="事件计数">
+    <span>input <b data-counter="input">0</b></span>
+    <span>change <b data-counter="change">0</b></span>
+    <span>paste <b data-counter="paste">0</b></span>
+    <span>keydown <b data-counter="keydown">0</b></span>
+    <span>submit <b data-counter="submit">0</b></span>
+    <span>fetch <b data-counter="fetch">0</b></span>
+    <span>xhr <b data-counter="xhr">0</b></span>
+    <span>copy <b data-counter="copy">0</b></span>
+    <button type="button" id="reset-counters">重置计数</button>
+  </div>
+</header>
+<main>
+<p class="hint">本页包含 5 个题目容器：单选（radio）、多选（checkbox）、下拉选择（select）、填空（两个 input）、简答（textarea）。扩展每次只处理用户确认的一个容器。</p>
+
+<section class="fixture-panel" data-question-container data-question-type="SINGLE_CHOICE" aria-label="单选题目容器 1">
+  <h2>第 1 题（单选）</h2>
+  <p data-question-stem>以下哪个是 1 + 1 的结果？</p>
+  <label class="option" data-option data-option-id="opt_1"><input type="radio" name="q1" value="opt_1"><span data-option-text>2</span></label>
+  <label class="option" data-option data-option-id="opt_2"><input type="radio" name="q1" value="opt_2"><span data-option-text>3</span></label>
+  <label class="option" data-option data-option-id="opt_3"><input type="radio" name="q1" value="opt_3"><span data-option-text>4</span></label>
+</section>
+
+<section class="fixture-panel" data-question-container data-question-type="MULTIPLE_CHOICE" aria-label="多选题目容器 2">
+  <h2>第 2 题（多选）</h2>
+  <p data-question-stem>以下哪些是偶数？</p>
+  <label class="option" data-option data-option-id="opt_1"><input type="checkbox" name="q2" value="opt_1"><span data-option-text>2</span></label>
+  <label class="option" data-option data-option-id="opt_2"><input type="checkbox" name="q2" value="opt_2"><span data-option-text>3</span></label>
+  <label class="option" data-option data-option-id="opt_3"><input type="checkbox" name="q2" value="opt_3"><span data-option-text>4</span></label>
+</section>
+
+<section class="fixture-panel" data-question-container data-question-type="SINGLE_CHOICE" aria-label="下拉选择题目容器 3">
+  <h2>第 3 题（单选 · select 控件）</h2>
+  <p data-question-stem>请从下拉框中选择正确答案。</p>
+  <select id="q3-select" aria-label="下拉选择">
+    <option value="">请选择</option>
+    <option data-option data-option-id="opt_1" value="opt_1">甲</option>
+    <option data-option data-option-id="opt_2" value="opt_2">乙</option>
+    <option data-option data-option-id="opt_3" value="opt_3">丙</option>
+  </select>
+</section>
+
+<section class="fixture-panel" data-question-container data-question-type="FILL_BLANK" aria-label="填空题目容器 4">
+  <h2>第 4 题（填空）</h2>
+  <p data-question-stem>请填写：1 + 1 = ___，2 + 2 = ___。</p>
+  <div class="blank-row">
+    <label for="practice-blank-1">空格 1</label>
+    <input id="practice-blank-1" type="text" data-blank data-blank-id="blank_1" autocomplete="off">
+  </div>
+  <div class="blank-row">
+    <label for="practice-blank-2">空格 2</label>
+    <input id="practice-blank-2" type="text" data-blank data-blank-id="blank_2" autocomplete="off">
+  </div>
+</section>
+
+<section class="fixture-panel" data-question-container data-question-type="SHORT_ANSWER" aria-label="简答题目容器 5">
+  <h2>第 5 题（简答）</h2>
+  <p data-question-stem>请用一句话说明加法的交换律。</p>
+  <textarea id="practice-answer-text" data-blank data-blank-id="blank_1" data-answer-text aria-label="简答输入框"></textarea>
+</section>
+
+<p class="status" id="practice-status">等待扩展操作。本页不会提交表单，也不会发送网络请求。</p>
+</main>
+<script>
+(function () {
+  "use strict";
+  var counts = { input: 0, change: 0, paste: 0, keydown: 0, submit: 0, fetch: 0, xhr: 0, copy: 0 };
+  function render(key) {
+    var nodes = document.querySelectorAll('[data-counter="' + key + '"]');
+    for (var i = 0; i < nodes.length; i += 1) { nodes[i].textContent = String(counts[key]); }
+  }
+  function renderAll() {
+    Object.keys(counts).forEach(function (key) { render(key); });
+  }
+  function bump(key) {
+    if (!Object.prototype.hasOwnProperty.call(counts, key)) { return; }
+    counts[key] += 1;
+    render(key);
+  }
+  function reset() {
+    Object.keys(counts).forEach(function (key) { counts[key] = 0; });
+    renderAll();
+  }
+  var view = {};
+  Object.keys(counts).forEach(function (key) {
+    Object.defineProperty(view, key, { enumerable: true, get: function () { return counts[key]; } });
+  });
+  Object.defineProperty(view, "reset", { enumerable: false, value: reset });
+  Object.defineProperty(window, "__counters", { enumerable: true, configurable: false, writable: false, value: view });
+  var eventView = {};
+  ["input", "change", "paste", "keydown", "submit"].forEach(function (key) {
+    Object.defineProperty(eventView, key, { enumerable: true, get: function () { return counts[key]; } });
+  });
+  Object.defineProperty(window, "__fixtureEvents", { enumerable: true, configurable: false, writable: false, value: eventView });
+  Object.defineProperty(window, "__fixtureMeta", {
+    enumerable: true,
+    configurable: false,
+    writable: false,
+    value: Object.freeze({
+      fixture: document.documentElement.getAttribute("data-fixture") || "",
+      pageKind: document.documentElement.getAttribute("data-page-kind") || "UNKNOWN"
+    })
+  });
+  Object.defineProperty(window, "__fixtureInternal", {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: Object.freeze({ bump: bump, reset: reset })
+  });
+
+  document.addEventListener("input", function () { bump("input"); }, true);
+  document.addEventListener("change", function () { bump("change"); }, true);
+  document.addEventListener("paste", function () { bump("paste"); }, true);
+  document.addEventListener("beforepaste", function () { bump("paste"); }, true);
+  document.addEventListener("keydown", function () { bump("keydown"); }, true);
+  document.addEventListener("copy", function () { bump("copy"); }, true);
+  document.addEventListener("submit", function (event) { event.preventDefault(); bump("submit"); }, true);
+
+  window.fetch = function () {
+    bump("fetch");
+    return Promise.reject(new Error("fixture-network-disabled"));
+  };
+  XMLHttpRequest.prototype.send = function () {
+    bump("xhr");
+  };
+
+  var button = document.getElementById("reset-counters");
+  if (button) { button.addEventListener("click", function (event) { event.preventDefault(); reset(); }); }
+  renderAll();
+})();
+
+(function () {
+  "use strict";
+  document.addEventListener("DOMContentLoaded", function () {
+    renderPracticeState();
+  });
+  function renderPracticeState() {
+    var status = document.getElementById("practice-status");
+    if (status) {
+      status.textContent = "等待扩展操作。本页不会提交表单，也不会发送网络请求。";
+    }
+  }
+})();
+</script>
+</body>
+</html>

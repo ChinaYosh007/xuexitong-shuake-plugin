@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Lazy blank editor regression</title>
+<style>body{font:18px sans-serif;padding:20px}.TiMu{width:760px;padding:15px}.blankItemInp{border:1px solid #ccc;margin:10px;padding:8px;min-height:30px}.InpDIV{min-height:24px;cursor:text}.textDIV{display:none}iframe{width:650px;height:50px}.btnSubmit,.bluebtn{display:inline-block;padding:15px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="lazy_blanks">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Fill in the Blank】</span>在事先不能确定循环次数时，一般使用（ ）和（ ）循环语句。</div><ul class="Zy_ulTk"></ul></div></div>
+<div id="question2"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Resource Analysis】</span>阅读完整程序，再按编号填写：String info=①; while(index&lt;②){if(③&gt;='0' &amp;&amp; ④&lt;='9')⑤; index++;}</div><ul class="Zy_ulTk"></ul></div></div>
+<div id="question3"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Entry】</span>写出以下程序两行输出：System.out.println(25); System.out.println(5);</div><ul class="Zy_ulTk"></ul></div></div>
+<a class="btnSubmit">Submit</a><div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<script>
+// Synthetic, deidentified counterpart of the observed .InpDIV/.textDIV editor layout.
+window.automationCounters={send:0,confirm:0,activate:0};
+const expected=[['while','do-while'],['scan.nextLine()','info.length()','info.charAt(index)','info.charAt(index)','count++'],['25','5']];
+expected.forEach((answers,q)=>answers.forEach((answer,index)=>{
+  const row=document.createElement('li');
+  row.innerHTML=`<div class="blankItemDiv"><label>No.${index+1}:</label><div class="XztiHover1 fl blankItemInp"><div class="InpDIV" id="inpDiv${q+1}_${index+1}"></div><div class="textDIV"><textarea style="display:none" id="answerEditor${q+1}_${index+1}"></textarea></div></div></div>`;
+  document.querySelector(`#question${q+1} .Zy_ulTk`).append(row);
+  const display=row.querySelector('.InpDIV'), box=row.querySelector('.textDIV'), saved=row.querySelector('textarea');
+  display.addEventListener('click',()=>{
+    window.automationCounters.activate++;
+    document.querySelectorAll('.blankItemInp').forEach(slot=>{slot.querySelector('.textDIV').style.display='none';slot.querySelector('.InpDIV').style.display='block'});
+    display.style.display='none';box.style.display='block';
+    if(box.querySelector('iframe'))return;
+    // A real delay catches the old fire-all-clicks-then-count-visible-editors behavior.
+    setTimeout(()=>{
+      const frame=document.createElement('iframe');frame.id=`ueditor_${q+1}_${index+1}`;box.append(frame);
+      frame.contentDocument.body.contentEditable='true';
+      frame.contentDocument.body.setAttribute('contenteditable','true');
+      frame.contentDocument.body.addEventListener('input',()=>{saved.value=frame.contentDocument.body.textContent;display.textContent=saved.value});
+      // Toolbar images are editor chrome, not changes to the question diagram.
+      const icon=document.createElement('img');icon.src='data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';box.append(icon);
+    },60);
+  });
+}));
+document.querySelector('.btnSubmit').addEventListener('click',()=>{window.automationCounters.send++;document.querySelector('#confirmSubWin').style.display='block'});
+document.querySelector('.bluebtn').addEventListener('click',()=>{
+  const correct=expected.every((answers,q)=>answers.every((answer,index)=>document.querySelector(`#answerEditor${q+1}_${index+1}`).value===answer));
+  if(!correct)return;
+  window.automationCounters.confirm++;document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');document.querySelector('#confirmSubWin').style.display='none';
+});
+</script></body></html>

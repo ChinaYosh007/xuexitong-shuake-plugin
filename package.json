@@ -1,0 +1,27 @@
+{
+  "name": "study-assistant",
+  "private": true,
+  "version": "0.2.4",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "package:extension": "npm run build -w @study/extension && python scripts/package-extension.py",
+    "typecheck": "npm run -ws --if-present typecheck",
+    "build": "npm run -ws --if-present build",
+    "test": "npm run -ws --if-present test",
+    "verify:contracts": "node scripts/verify-contracts.mjs",
+    "test:contracts": "node scripts/verify-contracts.mjs",
+    "test:fixtures": "playwright test --config tests/fixtures/playwright.config.ts",
+    "test:e2e": "playwright test --config tests/extension/playwright.config.ts",
+    "test:contracts:unit": "node --test tests/contracts/verify-contracts.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1"
+  }
+}

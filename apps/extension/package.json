@@ -1,0 +1,28 @@
+{
+  "name": "@study/extension",
+  "version": "0.2.4",
+  "private": true,
+  "type": "module",
+  "description": "Study Assistant Chrome MV3 extension (core client)",
+  "scripts": {
+    "build": "node ../../scripts/build-extension.mjs",
+    "build:local": "node ../../scripts/build-extension.mjs --mode local",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@study/contracts": "0.1.0",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.4",
+    "vue-tsc": "^2.1.10"
+  }
+}

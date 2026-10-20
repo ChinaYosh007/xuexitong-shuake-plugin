@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<!--
+  Fixture: changed-question
+  Page kind: PRACTICE
+  Synthetic fixture for the "Xuexitong AI Study Assistant" extension. No real
+  Xuexitong selectors, no real user data, no outbound network requests.
+  DOM contract: tests/fixtures/README.md (do not rename attributes without updating it).
+
+  Expected behavior / 验收点:
+  - capture happens against the initial stem/options; question fingerprint covers stem, type, option ids and option texts
+  - after the change, revalidation returns QUESTION_CHANGED and writes nothing (input/change/submit stay 0)
+  - page changes DOM directly without dispatching input/change events, so counters stay 0 unless the extension writes
+  - button #simulate-question-change triggers the change deterministically for tests
+-->
+<html lang="zh-CN" data-fixture="changed-question" data-page-kind="PRACTICE">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixture · changed-question · PRACTICE</title>
+<style>
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; line-height: 1.6; color: #1d232b; background: #f3f5f8; }
+header { padding: 16px 24px; background: #fff; border-bottom: 1px solid #d8dee7; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+h2 { font-size: 15px; margin: 0 0 8px; }
+.hint { margin: 4px 0 8px; color: #4b5563; font-size: 13px; }
+.counter-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; }
+.counter-bar b { font-variant-numeric: tabular-nums; color: #0b5fff; }
+main { max-width: 900px; margin: 0 auto; padding: 20px 24px 60px; }
+.fixture-panel { background: #fff; border: 1px solid #d8dee7; border-radius: 10px; padding: 16px 18px; margin: 0 0 16px; }
+.option { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; }
+.option input { margin-top: 4px; }
+.blank-row { display: flex; gap: 10px; align-items: center; margin: 8px 0; }
+.blank-row input, .blank-row textarea, select { font: inherit; padding: 6px 8px; border: 1px solid #9aa6b6; border-radius: 6px; min-width: 220px; background: #fff; }
+.blank-row textarea { min-height: 74px; }
+.status { margin-top: 10px; font-size: 13px; color: #7a4b00; }
+.banner { padding: 10px 14px; border-radius: 8px; background: #fff4e5; border: 1px solid #f0b357; color: #6b3d00; margin-bottom: 16px; font-weight: 600; }
+.readonly-note { color: #8a2a2a; font-size: 13px; }
+pre.escape { background: #f6f8fa; border: 1px solid #d8dee7; border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fixture: changed-question（题干/选项延迟变化）</h1>
+  <p class="hint">页面在 1500ms 后自动改变题干与选项，也提供按钮立即触发。采集后若指纹失配，扩展必须在写入前拒绝，零写入。</p>
+  <div class="counter-bar" role="status" aria-label="事件计数">
+    <span>input <b data-counter="input">0</b></span>
+    <span>change <b data-counter="change">0</b></span>
+    <span>paste <b data-counter="paste">0</b></span>
+    <span>keydown <b data-counter="keydown">0</b></span>
+    <span>submit <b data-counter="submit">0</b></span>
+    <span>fetch <b data-counter="fetch">0</b></span>
+    <span>xhr <b data-counter="xhr">0</b></span>
+    <span>copy <b data-counter="copy">0</b></span>
+    <button type="button" id="reset-counters">重置计数</button>
+  </div>
+</header>
+<main>
+<div class="banner">题干与选项会在页面加载 1500ms 后变化；也可点击「立即改变题目」复现。</div>
+
+<section class="fixture-panel" data-question-container data-question-type="SINGLE_CHOICE" aria-label="会变化的单选题目容器">
+  <h2>第 1 题（单选）</h2>
+  <p data-question-stem id="changed-stem">初始题干：1 + 1 等于多少？</p>
+  <label class="option" data-option data-option-id="opt_1"><input type="radio" name="cq1" value="opt_1"><span data-option-text id="changed-opt-1">2</span></label>
+  <label class="option" data-option data-option-id="opt_2"><input type="radio" name="cq1" value="opt_2"><span data-option-text id="changed-opt-2">3</span></label>
+</section>
+
+<button type="button" id="simulate-question-change">立即改变题目</button>
+<p class="status" id="changed-status">题目尚未变化。</p>
+</main>
+<script>
+(function () {
+  "use strict";
+  var counts = { input: 0, change: 0, paste: 0, keydown: 0, submit: 0, fetch: 0, xhr: 0, copy: 0 };
+  function render(key) {
+    var nodes = document.querySelectorAll('[data-counter="' + key + '"]');
+    for (var i = 0; i < nodes.length; i += 1) { nodes[i].textContent = String(counts[key]); }
+  }
+  function renderAll() {
+    Object.keys(counts).forEach(function (key) { render(key); });
+  }
+  function bump(key) {
+    if (!Object.prototype.hasOwnProperty.call(counts, key)) { return; }
+    counts[key] += 1;
+    render(key);
+  }
+  function reset() {
+    Object.keys(counts).forEach(function (key) { counts[key] = 0; });
+    renderAll();
+  }
+  var view = {};
+  Object.keys(counts).forEach(function (key) {
+    Object.defineProperty(view, key, { enumerable: true, get: function () { return counts[key]; } });
+  });
+  Object.defineProperty(view, "reset", { enumerable: false, value: reset });
+  Object.defineProperty(window, "__counters", { enumerable: true, configurable: false, writable: false, value: view });
+  var eventView = {};
+  ["input", "change", "paste", "keydown", "submit"].forEach(function (key) {
+    Object.defineProperty(eventView, key, { enumerable: true, get: function () { return counts[key]; } });
+  });
+  Object.defineProperty(window, "__fixtureEvents", { enumerable: true, configurable: false, writable: false, value: eventView });
+  Object.defineProperty(window, "__fixtureMeta", {
+    enumerable: true,
+    configurable: false,
+    writable: false,
+    value: Object.freeze({
+      fixture: document.documentElement.getAttribute("data-fixture") || "",
+      pageKind: document.documentElement.getAttribute("data-page-kind") || "UNKNOWN"
+    })
+  });
+  Object.defineProperty(window, "__fixtureInternal", {
+    enumerable: false,
+    configurable: false,
+    writable: false,
+    value: Object.freeze({ bump: bump, reset: reset })
+  });
+
+  document.addEventListener("input", function () { bump("input"); }, true);
+  document.addEventListener("change", function () { bump("change"); }, true);
+  document.addEventListener("paste", function () { bump("paste"); }, true);
+  document.addEventListener("beforepaste", function () { bump("paste"); }, true);
+  document.addEventListener("keydown", function () { bump("keydown"); }, true);
+  document.addEventListener("copy", function () { bump("copy"); }, true);
+  document.addEventListener("submit", function (event) { event.preventDefault(); bump("submit"); }, true);
+
+  window.fetch = function () {
+    bump("fetch");
+    return Promise.reject(new Error("fixture-network-disabled"));
+  };
+  XMLHttpRequest.prototype.send = function () {
+    bump("xhr");
+  };
+
+  var button = document.getElementById("reset-counters");
+  if (button) { button.addEventListener("click", function (event) { event.preventDefault(); reset(); }); }
+  renderAll();
+})();
+
+(function () {
+  "use strict";
+  var changed = false;
+  function applyChange() {
+    if (changed) { return; }
+    changed = true;
+    var stem = document.getElementById("changed-stem");
+    if (stem) { stem.textContent = "更新后的题干：2 + 2 等于多少？"; }
+    var first = document.getElementById("changed-opt-1");
+    var second = document.getElementById("changed-opt-2");
+    if (first) { first.textContent = "4"; }
+    if (second) { second.textContent = "5"; }
+    var container = document.querySelector("[data-question-container]");
+    if (container) {
+      var newOption = document.createElement("div");
+      newOption.className = "option";
+      newOption.setAttribute("data-option", "");
+      newOption.setAttribute("data-option-id", "opt_3");
+      newOption.innerHTML = '<input type="radio" name="cq1" value="opt_3"><span data-option-text>6</span>';
+      container.appendChild(newOption);
+    }
+    document.documentElement.setAttribute("data-question-changed", "1");
+    var status = document.getElementById("changed-status");
+    if (status) { status.textContent = "题目已改变（DOM 直接修改，不派发 input/change 事件）。"; }
+  }
+  var button = document.getElementById("simulate-question-change");
+  if (button) { button.addEventListener("click", applyChange); }
+  window.setTimeout(applyChange, 1500);
+})();
+</script>
+</body>
+</html>

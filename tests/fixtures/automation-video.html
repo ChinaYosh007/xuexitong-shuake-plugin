@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Automation video fixture</title>
+<style>body{font:18px sans-serif;padding:20px}.video-js{width:400px;height:200px;background:#000}#prevNextFocusNext{display:inline-block;padding:15px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="video">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div class="video-js" id="player"><video id="video_html5_api"></video><button class="vjs-big-play-button" type="button">Play</button></div>
+<div id="prevNextFocusNext">Next</div>
+<script>
+window.automationCounters = { play: 0, next: 0 };
+document.querySelector(".vjs-big-play-button").addEventListener("click", () => { window.automationCounters.play++; });
+document.getElementById("prevNextFocusNext").addEventListener("click", () => {
+  window.automationCounters.next++;
+  document.body.dataset.taskId = "last";
+  document.getElementById("player").remove();
+  document.querySelector(".ans-job-icon").setAttribute("aria-label", "任务点已完成");
+  document.getElementById("prevNextFocusNext").style.display = "none";
+});
+</script></body></html>

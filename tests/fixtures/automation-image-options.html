@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Image option and independent entry regression</title>
+<style>body{font:18px sans-serif;padding:20px}.TiMu{width:740px;padding:16px}.Zy_ulTop li{padding:12px}.num_option{cursor:pointer;display:inline-block;padding:10px}img{width:140px;height:70px;vertical-align:middle}textarea{width:640px;height:70px}.btnSubmit,.bluebtn{display:inline-block;padding:12px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="image_choices">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span>请选择蓝色圆形，两个选项都只有图片。</div>
+<ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span><img id="red" alt="Synthetic red square"></li><li><span class="num_option" data="B">B</span><img id="blue" alt="Synthetic blue circle"></li></ul><input id="answer1" type="hidden"></div></div>
+<div id="question2"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Short Answer】</span>第一个文字答题位置。</div><textarea id="entry2"></textarea></div></div>
+<div id="question3"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Short Answer】</span>第二个文字答题位置。</div><textarea id="entry3"></textarea></div></div>
+<a class="btnSubmit">Submit</a><div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<script>
+// Entirely synthetic image choices and text fields; one confirmed submit requires all answers.
+document.querySelector('#red').src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><rect x="10" y="5" width="60" height="60" fill="red"/></svg>');
+document.querySelector('#blue').src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="140" height="70"><circle cx="40" cy="35" r="30" fill="blue"/></svg>');
+window.automationCounters={send:0,confirm:0};
+document.querySelectorAll('.num_option').forEach(e=>e.addEventListener('click',()=>{document.querySelector('#answer1').value=e.getAttribute('data')}));
+document.querySelector('.btnSubmit').addEventListener('click',()=>{window.automationCounters.send++;document.querySelector('#confirmSubWin').style.display='block'});
+document.querySelector('.bluebtn').addEventListener('click',()=>{
+  if(document.querySelector('#answer1').value!=='B'||document.querySelector('#entry2').value!=='first entry'||document.querySelector('#entry3').value!=='second entry')return;
+  window.automationCounters.confirm++;document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');document.querySelector('#confirmSubWin').style.display='none';
+});
+</script></body></html>

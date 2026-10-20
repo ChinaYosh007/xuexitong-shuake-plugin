@@ -1,0 +1,21 @@
+node_modules/
+dist/
+target/
+*.local
+.env
+.env.*
+coverage/
+playwright-report/
+test-results/
+.idea/
+.vscode/
+*.log
+*.db
+*.sqlite
+!.gitkeep
+.local-e2e/
+.local-real/
+.local-demo/
+release/
+# Local network and registry configuration
+.npmrc

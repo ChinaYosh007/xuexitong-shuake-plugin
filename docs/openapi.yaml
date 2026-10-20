@@ -1,0 +1,1585 @@
+openapi: 3.1.0
+info:
+  title: Xuexitong AI Study Assistant API
+  version: 0.1.0
+  description: |
+    隐私优先的学习通 AI 学习助手后端 API。此文件是 API 契约权威，Java DTO 与
+    packages/contracts 中的 TypeScript 类型必须与它保持同步。
+
+    通用规则：
+    - 前缀 /api/v1，JSON 使用 UTF-8，时间为 UTC RFC 3339，ID 为 UUID。
+    - 鉴权使用 Authorization: Bearer <不透明 Token>；不使用 Cookie。
+    - 资源不存在或不属于当前用户统一返回 404。
+    - 配置修改必须携带 If-Match；缺失返回 428，版本冲突返回 412。
+    - 生成与连接测试必须携带 Idempotency-Key。
+    - 除 /meta、注册、登录外均需要鉴权。
+    - 题文与答案不落库；日志不包含题文、答案、密钥。
+    - 没有服务端“回填”或“提交”端点。
+  license:
+    name: UNLICENSED
+servers:
+  - url: http://127.0.0.1:8080
+    description: 本地开发
+security:
+  - bearerAuth: []
+tags:
+  - name: meta
+  - name: auth
+  - name: account
+  - name: provider
+  - name: study
+paths:
+  /api/v1/meta:
+    get:
+      tags: [meta]
+      summary: 公开版本、隐私版本与产品限制
+      security: []
+      operationId: getMeta
+      responses:
+        '200':
+          description: 公开元数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetaResponse'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/register:
+    post:
+      tags: [auth]
+      summary: 使用一次性邀请码注册
+      description: 注册不自动创建会话；前端随后调用登录。
+      security: []
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 登录并创建不透明 Bearer 会话
+      description: 会话绝对有效期默认 8 小时，不滑动延期；每用户最多 5 个有效会话。
+      security: []
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '201':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/auth/sessions/current:
+    delete:
+      tags: [auth]
+      summary: 退出当前会话
+      operationId: logout
+      responses:
+        '204':
+          description: 当前会话已删除
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me:
+    get:
+      tags: [account]
+      summary: 当前用户与默认配置 ID
+      operationId: getMe
+      responses:
+        '200':
+          description: 当前用户
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [account]
+      summary: 删除账号
+      description: 先置为 DELETING、撤销全部会话，再级联删除关联数据。
+      operationId: deleteAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+      responses:
+        '204':
+          description: 账号已删除
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me/password:
+    put:
+      tags: [account]
+      summary: 修改密码并撤销全部会话
+      operationId: changePassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        '204':
+          description: 密码已修改，全部会话失效
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me/default-provider:
+    put:
+      tags: [account]
+      summary: 设置或清空默认供应商配置
+      operationId: setDefaultProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetDefaultProviderRequest'
+      responses:
+        '200':
+          description: 更新后的默认配置 ID
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SetDefaultProviderResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me/export:
+    post:
+      tags: [account]
+      summary: 导出账号数据（不含密钥与散列）
+      operationId: exportAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      responses:
+        '200':
+          description: 脱敏 JSON 下载
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; filename="study-assistant-export.json"
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportData'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/me/usage:
+    get:
+      tags: [account]
+      summary: 最近七天聚合用量
+      operationId: getUsage
+      responses:
+        '200':
+          description: 聚合用量元数据
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsageSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/provider-catalog:
+    get:
+      tags: [provider]
+      summary: 服务端允许的供应商根地址
+      description: 目录是允许目标，不是能力保证；模型能力仍须单独测试。
+      operationId: getProviderCatalog
+      responses:
+        '200':
+          description: 允许目录
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  $ref: '#/components/schemas/ProviderCatalogEntry'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/provider-profiles:
+    get:
+      tags: [provider]
+      summary: 当前用户的配置列表
+      operationId: listProviderProfiles
+      responses:
+        '200':
+          description: 配置数组（不返回密钥明文、密文或 Nonce）
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 10
+                items:
+                  $ref: '#/components/schemas/ProviderProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags: [provider]
+      summary: 创建配置（不含 API Key）
+      operationId: createProviderProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderProfileWrite'
+      responses:
+        '201':
+          description: 已创建
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ConsentOrEndpointDenied'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/provider-profiles/{profileId}:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    get:
+      tags: [provider]
+      summary: 读取单个配置
+      operationId: getProviderProfile
+      responses:
+        '200':
+          description: 配置
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags: [provider]
+      summary: 完整替换配置（If-Match 乐观锁）
+      description: |
+        Base URL 变更时，在同一事务内更新地址、删除旧密钥密文、清除验证状态并增加版本。
+        任何配置变更都会清除验证状态。
+      operationId: updateProviderProfile
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderProfileWrite'
+      responses:
+        '200':
+          description: 更新后的配置
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ConsentOrEndpointDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [provider]
+      summary: 删除配置
+      description: 若该配置是默认配置，同一事务中清空默认值。
+      operationId: deleteProviderProfile
+      responses:
+        '204':
+          description: 已删除
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/provider-profiles/{profileId}/secret:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    put:
+      tags: [provider]
+      summary: 保存或替换 API Key
+      description: AES-256-GCM 加密保存；保存后清除验证状态并增加版本。响应不回显密钥。
+      operationId: saveProviderSecret
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SaveSecretRequest'
+      responses:
+        '200':
+          description: 新配置元数据
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderProfile'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '428':
+          $ref: '#/components/responses/PreconditionRequired'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [provider]
+      summary: 删除已保存的 API Key
+      operationId: deleteProviderSecret
+      responses:
+        '204':
+          description: 密钥已删除
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/provider-profiles/{profileId}/models:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    get:
+      tags: [provider]
+      summary: 使用已保存的密钥读取供应商模型列表
+      description: |
+        通过安全出站层请求 {baseUrl}/models，返回模型 ID 列表供控制台选择。
+        必须已有密钥；不返回密钥、不代替连接测试，也不自动修改模型配置。
+      operationId: listProviderModels
+      responses:
+        '200':
+          description: 模型 ID 列表（去重、按名称排序）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderModelList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/provider-profiles/{profileId}/probe:
+    parameters:
+      - $ref: '#/components/parameters/ProfileId'
+    post:
+      tags: [provider]
+      summary: 显式连接测试（固定 1+1 题目，真实生成，可能产生费用）
+      description: |
+        使用当前配置的协议、模型、指令角色与输出模式执行一次真实生成，不使用
+        /models 代替。成功只写验证元数据，不增加配置版本。测试期间配置变更返回
+        CONFIG_CHANGED_DURING_PROBE。
+      operationId: probeProviderProfile
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProbeRequest'
+      responses:
+        '200':
+          description: 测试通过
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProbeResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ConsentOrEndpointDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
+        '503':
+          $ref: '#/components/responses/ServiceBusy'
+        '504':
+          $ref: '#/components/responses/UpstreamTimeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/study/answers:
+    post:
+      tags: [study]
+      summary: 单题生成答案与解析
+      description: |
+        请求顺序：身份、配置归属、配置版本、题目校验、配额与幂等、读取不可变快照、
+        安全出站、协议解析、答案业务校验、最小回执更新。网络调用期间不持有数据库事务。
+        不自动切换供应商/模型/协议，不重试可能已计费的请求。题文与答案不落库。
+      operationId: createAnswer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnswerRequest'
+      responses:
+        '200':
+          description: 答案与解析
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnswerResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ConsentOrEndpointDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/VersionConflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          $ref: '#/components/responses/UpstreamFailure'
+        '503':
+          $ref: '#/components/responses/ServiceBusy'
+        '504':
+          $ref: '#/components/responses/UpstreamTimeout'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: 数据库存储的不透明 Token；服务端只保存 SHA-256 散列。
+
+  parameters:
+    ProfileId:
+      name: profileId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IfMatch:
+      name: If-Match
+      in: header
+      required: false
+      description: 必填的配置版本前置条件，格式为 "4"。缺失返回 428，冲突返回 412。
+      schema:
+        type: string
+        pattern: '^"[0-9]{1,9}"$'
+        examples: ['"4"']
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: 幂等键（建议 UUID，1 至 64 个 ASCII 可打印字符）。
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+        pattern: '^[\x21-\x7e]+$'
+
+  headers:
+    ETag:
+      description: 当前配置版本，格式为 "版本号"。
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+
+  responses:
+    ValidationError:
+      description: 请求字段校验失败
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Validation failed
+            status: 400
+            code: VALIDATION_ERROR
+            detail: 请求字段校验失败。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+    Unauthorized:
+      description: 未登录或会话过期
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            authRequired:
+              value:
+                type: about:blank
+                title: Authentication required
+                status: 401
+                code: AUTH_REQUIRED
+                detail: 需要登录。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            sessionExpired:
+              value:
+                type: about:blank
+                title: Session expired
+                status: 401
+                code: SESSION_EXPIRED
+                detail: 登录状态已过期，请重新登录。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+    ConsentOrEndpointDenied:
+      description: 缺少发送确认或供应商地址不在允许目录
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            consentRequired:
+              value:
+                type: about:blank
+                title: Consent required
+                status: 403
+                code: CONSENT_REQUIRED
+                detail: 发送前必须确认与所选供应商共享本题内容。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            endpointNotAllowed:
+              value:
+                type: about:blank
+                title: Provider endpoint not allowed
+                status: 403
+                code: ENDPOINT_NOT_ALLOWED
+                detail: Base URL 不在允许目录中。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+    NotFound:
+      description: 资源不存在或不属于当前用户
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Resource not found
+            status: 404
+            code: RESOURCE_NOT_FOUND
+            detail: 配置不存在。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+    Conflict:
+      description: |
+        业务状态冲突：PROFILE_NOT_VERIFIED、REQUEST_IN_PROGRESS、
+        DUPLICATE_COMPLETED_NO_REPLAY、REQUEST_OUTCOME_UNKNOWN、IDEMPOTENCY_KEY_REUSED、
+        CONFIG_CHANGED_DURING_PROBE。已成功请求不能重放答案正文。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            requestInProgress:
+              value:
+                type: about:blank
+                title: Request already in progress
+                status: 409
+                code: REQUEST_IN_PROGRESS
+                detail: 相同请求正在处理中。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            duplicateCompleted:
+              value:
+                type: about:blank
+                title: Duplicate completed request
+                status: 409
+                code: DUPLICATE_COMPLETED_NO_REPLAY
+                detail: 该请求此前已完成；为避免重复计费且不保存答案，不能重放结果。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            profileNotVerified:
+              value:
+                type: about:blank
+                title: Provider profile requires verification
+                status: 409
+                code: PROFILE_NOT_VERIFIED
+                detail: 配置尚未通过连接测试。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+    VersionConflict:
+      description: 配置版本已变化（If-Match 或 expectedVersion 不匹配）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Configuration version conflict
+            status: 412
+            code: CONFIG_VERSION_CONFLICT
+            detail: 配置已被修改，请重新读取后再保存。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+    PreconditionRequired:
+      description: 修改配置缺少 If-Match
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: If-Match header required
+            status: 428
+            code: PRECONDITION_REQUIRED
+            detail: 修改配置必须携带 If-Match 版本。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+    PayloadTooLarge:
+      description: 请求体超过 32 KiB
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Payload too large
+            status: 413
+            code: PAYLOAD_TOO_LARGE
+            detail: 请求体超过允许的大小。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+    RateLimited:
+      description: 用户级限流、日限额或供应商限流
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: 建议重试等待秒数
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            userRateLimited:
+              value:
+                type: about:blank
+                title: Too many requests
+                status: 429
+                code: USER_RATE_LIMITED
+                detail: 请求过于频繁，请稍后重试。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: true
+            dailyLimitReached:
+              value:
+                type: about:blank
+                title: Daily request limit reached
+                status: 429
+                code: DAILY_LIMIT_REACHED
+                detail: 已达到今日调用上限。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            upstreamRateLimited:
+              value:
+                type: about:blank
+                title: Provider rate limited the request
+                status: 429
+                code: UPSTREAM_RATE_LIMITED
+                detail: 供应商限流，请稍后重试。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: true
+    UpstreamFailure:
+      description: |
+        供应商鉴权失败、协议错误、无效输出或截断。供应商 401 不会映射为本产品 401。
+        不返回供应商完整响应、请求 Header 或堆栈。
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            authFailed:
+              value:
+                type: about:blank
+                title: Provider rejected the configured credentials
+                status: 502
+                code: UPSTREAM_AUTH_FAILED
+                detail: 供应商拒绝了当前配置的鉴权，请检查密钥。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            invalidOutput:
+              value:
+                type: about:blank
+                title: Provider returned an invalid answer
+                status: 502
+                code: UPSTREAM_INVALID_OUTPUT
+                detail: 模型返回的答案结构与题目不匹配。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+            truncated:
+              value:
+                type: about:blank
+                title: Provider output was truncated
+                status: 502
+                code: UPSTREAM_TRUNCATED
+                detail: 供应商输出被截断，未返回完整答案。
+                requestId: 40000000-0000-4000-8000-000000000001
+                retryable: false
+    ServiceBusy:
+      description: 服务全局在途调用已满
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Service busy
+            status: 503
+            code: SERVICE_BUSY
+            detail: 服务器当前并发已满，请稍后重试。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: true
+    UpstreamTimeout:
+      description: 供应商连接或响应超时；结果未知的请求不会自动重试
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Provider request timed out
+            status: 504
+            code: UPSTREAM_TIMEOUT
+            detail: 供应商响应超时，结果未知。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+    InternalError:
+      description: 服务端内部错误（不返回堆栈或内部细节）
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Internal error
+            status: 500
+            code: INTERNAL_ERROR
+            detail: 服务端处理请求失败。
+            requestId: 40000000-0000-4000-8000-000000000001
+            retryable: false
+
+  schemas:
+    Problem:
+      type: object
+      description: RFC 9457 problem document（type 固定为 about:blank）
+      additionalProperties: false
+      required: [type, title, status, code, detail, requestId, retryable]
+      properties:
+        type:
+          type: string
+          const: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        detail:
+          type: string
+          description: 面向用户的安全说明，不包含供应商响应、Header、堆栈或密钥。
+        requestId:
+          type: string
+          format: uuid
+        retryable:
+          type: boolean
+
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_ERROR
+        - AUTH_REQUIRED
+        - SESSION_EXPIRED
+        - CONSENT_REQUIRED
+        - ENDPOINT_NOT_ALLOWED
+        - RESOURCE_NOT_FOUND
+        - PROFILE_NOT_VERIFIED
+        - REQUEST_IN_PROGRESS
+        - DUPLICATE_COMPLETED_NO_REPLAY
+        - REQUEST_OUTCOME_UNKNOWN
+        - IDEMPOTENCY_KEY_REUSED
+        - CONFIG_CHANGED_DURING_PROBE
+        - CONFIG_VERSION_CONFLICT
+        - PAYLOAD_TOO_LARGE
+        - PRECONDITION_REQUIRED
+        - USER_RATE_LIMITED
+        - DAILY_LIMIT_REACHED
+        - UPSTREAM_RATE_LIMITED
+        - UPSTREAM_AUTH_FAILED
+        - UPSTREAM_PROTOCOL_ERROR
+        - UPSTREAM_INVALID_OUTPUT
+        - UPSTREAM_TRUNCATED
+        - SERVICE_BUSY
+        - UPSTREAM_TIMEOUT
+        - INTERNAL_ERROR
+
+    MetaResponse:
+      type: object
+      additionalProperties: false
+      required: [version, apiVersion, privacyVersion, promptVersion, limits]
+      properties:
+        version:
+          type: string
+        apiVersion:
+          type: string
+          const: v1
+        privacyVersion:
+          type: string
+          const: 2026-10-18.v1
+        promptVersion:
+          type: string
+          const: study-v1
+        limits:
+          $ref: '#/components/schemas/MetaLimits'
+
+    MetaLimits:
+      type: object
+      additionalProperties: false
+      required: [maxRequestBytes, maxQuestionChars, maxOptions, maxProfilesPerUser, perUserConcurrency,
+                 requestsPerMinute, requestsPerDay, sessionTtlSeconds]
+      properties:
+        maxRequestBytes:
+          type: integer
+          const: 524288
+        maxQuestionChars:
+          type: integer
+          const: 8000
+        maxOptions:
+          type: integer
+          const: 20
+        maxProfilesPerUser:
+          type: integer
+          minimum: 1
+        perUserConcurrency:
+          type: integer
+          minimum: 1
+        requestsPerMinute:
+          type: integer
+          minimum: 1
+        requestsPerDay:
+          type: integer
+          minimum: 1
+        sessionTtlSeconds:
+          type: integer
+          minimum: 60
+
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, inviteCode, acceptedPrivacyVersion]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: '^[a-z0-9_]{3,32}$'
+          description: 规范为小写 ASCII 字母、数字和下划线。
+        password:
+          type: string
+          minLength: 12
+          maxLength: 72
+          description: 至少 12 个字符，UTF-8 编码不超过 BCrypt 的 72 字节限制。
+        inviteCode:
+          type: string
+          minLength: 1
+          maxLength: 256
+        acceptedPrivacyVersion:
+          type: string
+          const: 2026-10-18.v1
+
+    RegisterResponse:
+      type: object
+      additionalProperties: false
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+          maxLength: 64
+        password:
+          type: string
+          minLength: 1
+          maxLength: 1024
+
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required: [tokenType, accessToken, expiresAt, user]
+      properties:
+        tokenType:
+          type: string
+          const: Bearer
+        accessToken:
+          type: string
+          description: 不透明随机 Token，服务端仅保存 SHA-256 散列。
+        expiresAt:
+          type: string
+          format: date-time
+        user:
+          $ref: '#/components/schemas/UserIdentity'
+
+    UserIdentity:
+      type: object
+      additionalProperties: false
+      required: [id, username]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+
+    MeResponse:
+      type: object
+      additionalProperties: false
+      required: [id, username, defaultProviderProfileId, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        defaultProviderProfileId:
+          type: [string, 'null']
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 72
+
+    DeleteAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, confirmation]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        confirmation:
+          type: string
+          const: DELETE
+
+    ExportRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 1
+          maxLength: 1024
+
+    SetDefaultProviderRequest:
+      type: object
+      additionalProperties: false
+      required: [profileId]
+      properties:
+        profileId:
+          type: [string, 'null']
+          format: uuid
+
+    SetDefaultProviderResponse:
+      type: object
+      additionalProperties: false
+      required: [profileId]
+      properties:
+        profileId:
+          type: [string, 'null']
+          format: uuid
+
+    ExportData:
+      type: object
+      additionalProperties: false
+      required: [exportedAt, user, providerProfiles, usage]
+      properties:
+        exportedAt:
+          type: string
+          format: date-time
+        user:
+          $ref: '#/components/schemas/UserExport'
+        providerProfiles:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderProfile'
+        usage:
+          $ref: '#/components/schemas/UsageSummary'
+
+    UserExport:
+      type: object
+      additionalProperties: false
+      required: [id, username, createdAt, defaultProviderProfileId]
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        defaultProviderProfileId:
+          type: [string, 'null']
+          format: uuid
+
+    UsageSummary:
+      type: object
+      additionalProperties: false
+      required: [from, to, requests, inputTokens, outputTokens, totalTokens]
+      properties:
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        requests:
+          type: integer
+          minimum: 0
+        inputTokens:
+          type: [integer, 'null']
+          minimum: 0
+        outputTokens:
+          type: [integer, 'null']
+          minimum: 0
+        totalTokens:
+          type: [integer, 'null']
+          minimum: 0
+
+    ProviderCatalogEntry:
+      type: object
+      additionalProperties: false
+      required: [rootUrl, label]
+      properties:
+        rootUrl:
+          type: string
+          format: uri
+          maxLength: 512
+        label:
+          type: string
+
+    ProviderCapabilities:
+      type: object
+      additionalProperties: false
+      required: [instructionRole, outputMode, tokenLimitField, supportsTemperature, supportsStoreFalse]
+      properties:
+        instructionRole:
+          type: string
+          enum: [system, developer]
+        outputMode:
+          type: string
+          enum: [JSON_SCHEMA, JSON_OBJECT, PROMPT_JSON]
+        tokenLimitField:
+          type: string
+          enum: [max_tokens, max_completion_tokens, max_output_tokens]
+        supportsTemperature:
+          type: boolean
+        supportsStoreFalse:
+          type: boolean
+
+    ProviderGeneration:
+      type: object
+      additionalProperties: false
+      required: [maxOutputTokens, temperature]
+      properties:
+        maxOutputTokens:
+          type: integer
+          minimum: 128
+          maximum: 4096
+        temperature:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+
+    ProviderProfileWrite:
+      type: object
+      additionalProperties: false
+      required: [name, baseUrl, protocol, model, enabled, capabilities, generation]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+        baseUrl:
+          type: string
+          format: uri
+          maxLength: 512
+        protocol:
+          type: string
+          enum: [CHAT_COMPLETIONS, RESPONSES]
+        model:
+          type: string
+          minLength: 1
+          maxLength: 128
+        enabled:
+          type: boolean
+        capabilities:
+          $ref: '#/components/schemas/ProviderCapabilities'
+        generation:
+          $ref: '#/components/schemas/ProviderGeneration'
+      description: |
+        跨字段业务校验：RESPONSES 必须使用 max_output_tokens；CHAT_COMPLETIONS 只能
+        使用 max_tokens 或 max_completion_tokens；不支持 temperature 时必须为 null；
+        Base URL 必须在服务端允许目录内；不允许任意额外 Header 或 JSON 参数。
+
+    ProviderVerification:
+      type: object
+      additionalProperties: false
+      required: [status, verifiedVersion, testedAt]
+      properties:
+        status:
+          type: string
+          enum: [UNVERIFIED, VERIFIED]
+        verifiedVersion:
+          type: [integer, 'null']
+          minimum: 1
+        testedAt:
+          type: [string, 'null']
+          format: date-time
+
+    ProviderProfile:
+      allOf:
+        - $ref: '#/components/schemas/ProviderProfileWrite'
+        - type: object
+          additionalProperties: false
+          required: [id, version, hasKey, verification, createdAt, updatedAt]
+          properties:
+            id:
+              type: string
+              format: uuid
+            version:
+              type: integer
+              minimum: 1
+            hasKey:
+              type: boolean
+            verification:
+              $ref: '#/components/schemas/ProviderVerification'
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+
+    SaveSecretRequest:
+      type: object
+      additionalProperties: false
+      required: [apiKey]
+      properties:
+        apiKey:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: 禁止 CR、LF 与 NUL；响应不回显明文。
+
+    ProbeRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedVersion, acknowledgePossibleCharge]
+      properties:
+        expectedVersion:
+          type: integer
+          minimum: 1
+        acknowledgePossibleCharge:
+          type: boolean
+          const: true
+
+    ProbeResponse:
+      type: object
+      additionalProperties: false
+      required: [status, profileVersion, testedAt, latencyMs]
+      properties:
+        status:
+          type: string
+          const: VERIFIED
+        profileVersion:
+          type: integer
+          minimum: 1
+        testedAt:
+          type: string
+          format: date-time
+        latencyMs:
+          type: integer
+          minimum: 0
+
+    ProviderModelList:
+      type: object
+      additionalProperties: false
+      required: [models]
+      properties:
+        models:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: string
+            minLength: 1
+            maxLength: 200
+
+    QuestionType:
+      type: string
+      enum: [SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE, FILL_BLANK, SHORT_ANSWER, UNKNOWN]
+
+    StudyOption:
+      type: object
+      additionalProperties: false
+      required: [id, text]
+      properties:
+        id:
+          type: string
+          pattern: '^[\x21-\x7e]{1,64}$'
+        text:
+          type: string
+          maxLength: 1000
+
+    StudyBlank:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id:
+          type: string
+          pattern: '^[\x21-\x7e]{1,64}$'
+        label:
+          type: string
+          maxLength: 1000
+
+    StudyQuestion:
+      type: object
+      additionalProperties: false
+      required: [id, type, stem, options, blanks]
+      properties:
+        imageDataUrl:
+          type: [string, 'null']
+          maxLength: 400000
+          pattern: '^data:image/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$'
+          description: Optional rendered question image; external URLs are rejected.
+        extraImageDataUrls:
+          type: [array, 'null']
+          maxItems: 2
+          items:
+            type: string
+            maxLength: 400000
+            pattern: '^data:image/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$'
+          description: >-
+            Optional original-quality images (largest first) beyond the primary image, attached
+            by the automatic originals pass (2026-10-20) when the question text cannot be read,
+            the composite render fails, or the model reports the composite image as unreadable.
+            The combined length of all images must keep the request body within the /meta
+            maxRequestBytes limit; external URLs are rejected.
+        id:
+          type: string
+          pattern: '^[\x21-\x7e]{1,64}$'
+        type:
+          $ref: '#/components/schemas/QuestionType'
+        stem:
+          type: string
+          minLength: 1
+          maxLength: 8000
+        options:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/StudyOption'
+        blanks:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/StudyBlank'
+
+    StudyConsent:
+      type: object
+      additionalProperties: false
+      required: [shareQuestionWithSelectedProvider, privacyVersion]
+      properties:
+        shareQuestionWithSelectedProvider:
+          type: boolean
+          const: true
+        privacyVersion:
+          type: string
+          const: 2026-10-18.v1
+
+    AnswerRequest:
+      type: object
+      additionalProperties: false
+      required: [providerProfileId, expectedProfileVersion, sourceMode, question, consent]
+      properties:
+        providerProfileId:
+          type: string
+          format: uuid
+        expectedProfileVersion:
+          type: integer
+          minimum: 1
+        sourceMode:
+          type: string
+          enum: [PASTE, SELECTION, ADAPTER]
+        question:
+          $ref: '#/components/schemas/StudyQuestion'
+        consent:
+          $ref: '#/components/schemas/StudyConsent'
+
+    BlankAnswer:
+      type: object
+      additionalProperties: false
+      required: [blankId, answer]
+      properties:
+        blankId:
+          type: string
+          maxLength: 64
+        answer:
+          type: string
+          maxLength: 2000
+
+    StudyAnswer:
+      type: object
+      additionalProperties: false
+      required: [status, selectedOptionIds, blankAnswers, textAnswer, explanation, caveats]
+      properties:
+        status:
+          type: string
+          enum: [ANSWERED, NEEDS_CONTEXT, REFUSED]
+        selectedOptionIds:
+          type: array
+          items:
+            type: string
+            maxLength: 64
+        blankAnswers:
+          type: array
+          items:
+            $ref: '#/components/schemas/BlankAnswer'
+        textAnswer:
+          type: [string, 'null']
+          maxLength: 8000
+        explanation:
+          type: string
+          maxLength: 8000
+        caveats:
+          type: array
+          maxItems: 5
+          items:
+            type: string
+            maxLength: 500
+
+    TokenUsage:
+      type: object
+      additionalProperties: false
+      required: [inputTokens, outputTokens, totalTokens]
+      description: 供应商未提供 usage 时各字段为 null，不虚构 Token 数。
+      properties:
+        inputTokens:
+          type: [integer, 'null']
+          minimum: 0
+        outputTokens:
+          type: [integer, 'null']
+          minimum: 0
+        totalTokens:
+          type: [integer, 'null']
+          minimum: 0
+
+    AnswerResponse:
+      type: object
+      additionalProperties: false
+      required: [requestId, questionId, providerProfileId, profileVersion, answer, structurallyFillable,
+                 usage, latencyMs, promptVersion]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+          description: 本次请求回执 ID；成功响应不会重放答案正文。
+        questionId:
+          type: string
+        providerProfileId:
+          type: string
+          format: uuid
+        profileVersion:
+          type: integer
+          minimum: 1
+        answer:
+          $ref: '#/components/schemas/StudyAnswer'
+        structurallyFillable:
+          type: boolean
+          description: 仅表示答案结构完整，不授权任何页面操作。
+        usage:
+          oneOf:
+            - $ref: '#/components/schemas/TokenUsage'
+            - type: 'null'
+        latencyMs:
+          type: integer
+          minimum: 0
+        promptVersion:
+          type: string
+          const: study-v1

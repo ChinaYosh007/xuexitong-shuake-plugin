@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Automation video popup fixture</title>
+<style>body{font:18px sans-serif;padding:20px}.video-js{width:400px;height:200px;background:#000}#prevNextFocusNext{display:inline-block;padding:15px;cursor:pointer}
+#popup{position:fixed;left:40px;top:40px;width:340px;padding:16px;background:#fff;border:2px solid #333;z-index:9}
+#popup label{display:block;margin:6px 0}</style></head>
+<body data-automation-fixture="true" data-task-id="video">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div class="video-js" id="player"><video id="video_html5_api"></video><button class="vjs-big-play-button" type="button">Play</button></div>
+<!-- 视频被站点强制弹题暂停的状态：弹题已显示，只有答对（选项 B + 站点自身「确定」按钮）才关闭。 -->
+<div id="popup" role="dialog"><p>随堂检测：选择正确才能继续播放。</p>
+<label><input type="radio" name="popup" value="A">A. 第一项</label>
+<label><input type="radio" name="popup" value="B">B. 第二项</label>
+<label><input type="radio" name="popup" value="C">C. 第三项</label>
+<button type="button" id="popupOk">确定</button></div>
+<div id="prevNextFocusNext">Next</div>
+<script>
+window.automationCounters = { next: 0, popupOptions: 0, popupPass: 0 };
+document.querySelectorAll("#popup input[type=radio]").forEach(function (input) {
+  input.addEventListener("click", function () { input.checked = true; });
+});
+document.getElementById("popupOk").addEventListener("click", function () {
+  var checked = document.querySelector("#popup input:checked");
+  window.automationCounters.popupOptions++;
+  if (checked && checked.value === "B") {
+    document.getElementById("popup").style.display = "none";
+    window.automationCounters.popupPass++;
+  } else {
+    document.querySelectorAll("#popup input").forEach(function (input) { input.checked = false; });
+  }
+});
+document.getElementById("prevNextFocusNext").addEventListener("click", function () {
+  window.automationCounters.next++;
+  document.body.dataset.taskId = "last";
+  document.getElementById("player").remove();
+  document.getElementById("popup").remove();
+  document.querySelector(".ans-job-icon").setAttribute("aria-label", "任务点已完成");
+  document.getElementById("prevNextFocusNext").style.display = "none";
+});
+</script></body></html>

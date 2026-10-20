@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Automation judge fixture</title>
+<style>body{font:18px sans-serif;padding:20px}#question1{width:700px;padding:20px}.Zy_TItle{padding:12px}.Zy_ulTop{padding:15px}.num_option{display:inline-block;padding:10px;cursor:pointer}.btnSubmit,.bluebtn{display:inline-block;padding:15px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="judge">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【判断题】</span><p>地球是围绕太阳公转的行星，这一说法正确。</p></div>
+<ul class="Zy_ulTop"><li><span class="num_option" data="true">True</span></li><li><span class="num_option" data="false">False</span></li></ul>
+<input id="answer1" type="hidden" value=""></div></div>
+<a class="btnSubmit">Submit</a>
+<div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<script>
+// 真实学习通判断题皮肤：隐藏答案值是 true/false，而不是选项字母 A/B。
+// 站点只在隐藏值被正确写回后才把任务点标记完成，提交确认只增加计数。
+window.automationCounters = { send:0,confirm:0,next:0 };
+document.querySelectorAll('.num_option').forEach(option=>option.addEventListener('click',()=>{
+  document.getElementById('answer1').value=option.getAttribute('data');
+}));
+document.querySelector('.btnSubmit').addEventListener('click',()=>{
+  window.automationCounters.send++;
+  document.getElementById('confirmSubWin').style.display='block';
+});
+document.querySelector('.bluebtn').addEventListener('click',()=>{
+  if(document.getElementById('answer1').value!=='true')return;
+  window.automationCounters.confirm++;
+  document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');
+  document.getElementById('confirmSubWin').style.display='none';
+});
+</script></body></html>

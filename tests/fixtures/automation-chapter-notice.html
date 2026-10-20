@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Chapter notice regression fixture</title>
+<style>body{font:18px sans-serif;padding:20px}.btnSubmit,.bluebtn,#prevNextFocusNext,.jobFinishTip a{display:inline-block;padding:15px;cursor:pointer}#question1{width:700px;padding:20px}.num_option{padding:12px;display:inline-block;cursor:pointer}.jobFinishTip{position:fixed;inset:0;background:#0008}.popDiv{background:white;width:440px;padding:24px;margin:100px auto}</style></head>
+<body data-automation-fixture="true" data-task-id="chapter">
+<div class="ans-job-icon" aria-label="任务点已完成"></div><h2>Current video task completed</h2>
+<div id="remaining"></div><div id="prevNextFocusNext">Next</div>
+<div class="maskDiv jobFinishTip" style="display:none"><div class="popDiv"><h3>Notice</h3><p>There are still some unfinished tasks in the current chapter. Do you want to complete them?</p><a class="nextChapter">Next</a><a class="popMoveDele">to learn</a></div></div>
+<script>
+window.automationCounters={next:0,learn:0,skip:0,send:0,confirm:0};
+const notice=document.querySelector('.jobFinishTip');
+document.getElementById('prevNextFocusNext').addEventListener('click',()=>{
+  window.automationCounters.next++;
+  // Model the site's asynchronously appearing chapter notice.
+  setTimeout(()=>{notice.style.display='block'},200);
+});
+notice.querySelector('.popMoveDele').addEventListener('click',()=>{
+  window.automationCounters.learn++;notice.style.display='none';
+  document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点未完成');
+  document.getElementById('remaining').innerHTML='<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span>1 + 1 等于多少？</div><ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span>2</li><li><span class="num_option" data="B">B</span>3</li></ul><input type="hidden" id="answer1" value=""></div></div><a class="btnSubmit">Submit</a><div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>';
+  document.querySelectorAll('.num_option').forEach(el=>el.addEventListener('click',()=>{document.getElementById('answer1').value=el.getAttribute('data')}));
+  document.querySelector('.btnSubmit').addEventListener('click',()=>{
+    window.automationCounters.send++;document.getElementById('confirmSubWin').style.display='block';
+  });
+  document.querySelector('.bluebtn').addEventListener('click',()=>{
+    if(document.getElementById('answer1').value!=='A')return;
+    window.automationCounters.confirm++;
+    document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');
+    document.getElementById('confirmSubWin').style.display='none';
+    document.getElementById('prevNextFocusNext').style.display='none';
+  });
+});
+notice.querySelector('.nextChapter').addEventListener('click',()=>{
+  window.automationCounters.skip++;notice.style.display='none';
+  document.body.dataset.taskId='last';
+  document.getElementById('remaining').replaceChildren();
+  document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');
+  document.getElementById('prevNextFocusNext').style.display='none';
+});
+</script></body></html>

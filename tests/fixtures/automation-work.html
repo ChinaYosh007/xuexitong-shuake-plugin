@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Automation work fixture</title>
+<style>body{font:18px sans-serif;padding:20px}#question1{width:700px;padding:20px}.Zy_TItle{padding:12px}.Zy_ulTop{padding:15px}.num_option{display:inline-block;padding:10px;cursor:pointer}.btnSubmit,.bluebtn{display:inline-block;padding:15px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-automation-work="true" data-task-id="work">
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span><p>1 + 1 等于多少？</p></div>
+<ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span>2</li><li><span class="num_option" data="B">B</span>3</li></ul>
+<input id="answer1" type="hidden" value="B"></div></div>
+<div id="question2"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Fill in the Blank】</span><p>填写第一个空格。</p></div>
+<iframe id="ueditor_2" srcdoc="<body contenteditable='true'></body>"></iframe></div></div>
+<a class="btnSubmit">Submit</a>
+<div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<script>
+window.automationCounters = { send: 0, confirm: 0 };
+document.querySelectorAll('.num_option').forEach(option => option.addEventListener('click', () => {
+  document.getElementById('answer1').value = option.getAttribute('data');
+}));
+document.querySelector('.btnSubmit').addEventListener('click', () => {
+  window.automationCounters.send++;
+  document.getElementById('confirmSubWin').style.display = 'block';
+});
+document.querySelector('.bluebtn').addEventListener('click', () => {
+  const blank = document.getElementById('ueditor_2').contentDocument.body.textContent;
+  if (document.getElementById('answer1').value !== 'A' || blank !== '答案1') return;
+  window.automationCounters.confirm++;
+  // 真实站点交卷后会离开作答视图；这里同样移除作答区与提交控件，只保留结果文案。
+  document.body.innerHTML = '<div id="result">提交成功，可查看答案</div>';
+});
+</script></body></html>

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Resource blanks regression fixture</title>
+<style>body{font:18px sans-serif;padding:20px}#question1{width:720px;padding:20px}.Zy_TItle{padding:12px}iframe{display:block;width:650px;height:50px;margin:10px}.btnSubmit,.bluebtn{display:inline-block;padding:15px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="resource">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Resource Analysis】</span><p>根据代码图中编号填写两个空格。</p><img id="code" alt="Synthetic code with two numbered blanks"></div>
+<label>No.1:</label><iframe id="ueditor_1" srcdoc="<body contenteditable='true'></body>"></iframe>
+<label>No.2:</label><iframe id="ueditor_2" srcdoc="<body contenteditable='true'></body>"></iframe>
+</div></div><a class="btnSubmit">Submit</a>
+<div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<script>
+document.getElementById('code').src='data:image/svg+xml,'+encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="140"><rect width="600" height="140" fill="white"/><text x="10" y="30" font-family="monospace" font-size="20">class Sample {</text><text x="30" y="65" font-family="monospace" font-size="20">[1] void [2](String[] args) { }</text><text x="10" y="100" font-size="20">}</text></svg>');
+window.automationCounters={send:0,confirm:0};
+document.querySelector('.btnSubmit').addEventListener('click',()=>{
+  window.automationCounters.send++;
+  document.getElementById('confirmSubWin').style.display='block';
+});
+document.querySelector('.bluebtn').addEventListener('click',()=>{
+  if(document.getElementById('ueditor_1').contentDocument.body.textContent.trim()!=='答案1'||
+     document.getElementById('ueditor_2').contentDocument.body.textContent.trim()!=='答案2')return;
+  window.automationCounters.confirm++;
+  document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');
+  document.getElementById('confirmSubWin').style.display='none';
+});
+</script></body></html>

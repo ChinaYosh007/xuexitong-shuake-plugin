@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Automation non-paste fixture</title>
+<!--
+  Course-automation fixture for questions whose answer is NOT a UEditor iframe:
+  Expected behavior / 验收点
+  - 第 1 题：填空只有普通 <input type="text">，站点只在 input/change 时把值同步到隐藏答案；
+    任务只在隐藏答案正确时完成；扩展不得依赖粘贴/剪贴板，也不得写 #answer* 隐藏字段。
+  - 第 2 题：内联 <svg> 图示单选题；题图必须由本地渲染的 canvas/图像兜底（不得把 svg 当未知图示报错）。
+  - 第 3 题：题干文本位于 open shadow root；源文字读取必须进入影子 DOM，选项为普通站点结构。
+  - 只有 .bluebtn 确认且三题答案都正确时才把任务点标记为已完成；提交按钮仅计数并弹确认框。
+  - 页面不发起任何真实网络请求，不含真实账号/选择器；window.automationCounters 只用于断言。
+-->
+<style>
+body{font:18px sans-serif;padding:20px}
+#question1,#question2,#question3{width:700px;padding:20px;margin-bottom:16px;border:1px solid #d0d7de}
+.Zy_TItle{padding:12px}.Zy_ulTop{padding:15px}
+.num_option{display:inline-block;padding:10px;cursor:pointer}
+#blank-input-1{display:inline-block;width:320px;padding:8px;font-size:18px}
+#question2 svg{display:block;margin:10px 0;border:1px solid #d0d7de}
+.btnSubmit,#prevNextFocusNext,.bluebtn{display:inline-block;padding:15px;cursor:pointer}
+</style></head>
+<body data-automation-fixture="true" data-task-id="nonpaste">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Fill in the Blank】</span><p>填写第一个空格的答案。</p></div>
+<input id="blank-input-1" type="text" aria-label="第 1 空" />
+<input id="answer1" type="hidden" value="" /></div></div>
+
+<div id="question2"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span><p>观察内联 SVG 图示，选择正确的一项。</p>
+<svg id="diagram-q2" width="120" height="60" viewBox="0 0 120 60" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="绿色方块与蓝色圆形">
+<rect x="5" y="5" width="50" height="50" fill="#2da44e"></rect>
+<circle cx="85" cy="30" r="20" fill="#0969da"></circle>
+</svg></div>
+<ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span>绿色方块与蓝色圆形</li><li><span class="num_option" data="B">B</span>两个红色圆形</li></ul>
+<input id="answer2" type="hidden" value="" /></div></div>
+
+<div id="question3"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span><p>根据题干选择正确的一项。</p>
+<div id="shadow-stem-host"></div></div>
+<ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span>影子选项甲</li><li><span class="num_option" data="B">B</span>影子选项乙</li></ul>
+<input id="answer3" type="hidden" value="" /></div></div>
+
+<a class="btnSubmit">Submit</a>
+<div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<div id="prevNextFocusNext">Next</div>
+<script>
+window.automationCounters = { send: 0, confirm: 0, next: 0 };
+window.automationFieldCounters = { input: 0, change: 0, blur: 0 };
+// 题干里的影子 DOM：源文字读取必须进入 open shadow root，否则第 3 题会退化成图像题。
+document.getElementById('shadow-stem-host').attachShadow({ mode: 'open' }).innerHTML =
+  '<p data-shadow-stem>影子题干：正确答案是选项甲。</p>';
+var blank = document.getElementById('blank-input-1');
+// 站点只在原生 input/change 时同步隐藏答案；扩展必须用普通控件写入，不能模拟粘贴。
+blank.addEventListener('input', function () {
+  window.automationFieldCounters.input++;
+  document.getElementById('answer1').value = blank.value;
+});
+blank.addEventListener('change', function () {
+  window.automationFieldCounters.change++;
+  document.getElementById('answer1').value = blank.value;
+});
+blank.addEventListener('blur', function () { window.automationFieldCounters.blur++; });
+document.querySelectorAll('#question2 .num_option').forEach(function (option) {
+  option.addEventListener('click', function () { document.getElementById('answer2').value = option.getAttribute('data'); });
+});
+document.querySelectorAll('#question3 .num_option').forEach(function (option) {
+  option.addEventListener('click', function () { document.getElementById('answer3').value = option.getAttribute('data'); });
+});
+document.querySelector('.btnSubmit').addEventListener('click', function () {
+  window.automationCounters.send++;
+  document.getElementById('confirmSubWin').style.display = 'block';
+});
+document.querySelector('.bluebtn').addEventListener('click', function () {
+  // 任务点只有在三题答案都正确时才完成；普通输入框的隐藏答案必须由站点自身 input/change 同步而来。
+  if (document.getElementById('answer1').value !== '答案1' ||
+      document.getElementById('answer2').value !== 'A' ||
+      document.getElementById('answer3').value !== 'A') return;
+  window.automationCounters.confirm++;
+  document.querySelector('.ans-job-icon').setAttribute('aria-label', '任务点已完成');
+  document.getElementById('confirmSubWin').style.display = 'none';
+});
+document.getElementById('prevNextFocusNext').addEventListener('click', function () {
+  window.automationCounters.next++;
+  // 记录导航前站点侧的最终状态：真实课程页会像下面这样销毁本题 DOM，测试在任务链结束后只能
+  // 用这份快照证明普通输入框已被写入、并经站点自身 input/change 同步到隐藏答案（回读由扩展端
+  // APPLY 完成，隐藏答案正确才允许确认完成）。
+  window.automationFinalAnswers = {
+    input: blank.value,
+    answer1: document.getElementById('answer1').value,
+    answer2: document.getElementById('answer2').value,
+    answer3: document.getElementById('answer3').value
+  };
+  document.body.dataset.taskId = 'last';
+  document.getElementById('question1').remove();
+  document.getElementById('question2').remove();
+  document.getElementById('question3').remove();
+  document.getElementById('prevNextFocusNext').style.display = 'none';
+});
+</script></body></html>

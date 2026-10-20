@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Study Assistant",
+  "version": "0.2.4",
+  "description": "Privacy-first study assistant: capture one question, preview, send, review, fill verified practice pages.",
+  "minimum_chrome_version": "116",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://study.example.invalid/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "打开学习助手"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src https: http://127.0.0.1:* http://localhost:*"
+  }
+}

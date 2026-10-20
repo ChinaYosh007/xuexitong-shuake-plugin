@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Automation course fixture</title>
+<style>body{font:18px sans-serif;padding:20px}#question1{width:700px;padding:20px}.Zy_TItle{padding:12px}.Zy_ulTop{padding:15px}.num_option{display:inline-block;padding:10px;cursor:pointer}.btnSubmit,#prevNextFocusNext,.bluebtn{display:inline-block;padding:15px;cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="quiz">
+<div class="ans-job-icon" aria-label="任务点未完成"></div>
+<div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span><p>1 + 1 等于多少？</p></div>
+<ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span>2</li><li><span class="num_option" data="B">B</span>3</li></ul>
+<input id="answer1" type="hidden" value="B"></div></div>
+<div id="question2"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Fill in the Blank】</span><p>填写第一个空格。</p></div>
+<iframe id="ueditor_2" srcdoc="<body contenteditable='true'></body>"></iframe></div></div>
+<div id="question3"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Short Answer】</span><p>填写简答。</p></div>
+<iframe id="ueditor_3" srcdoc="<body contenteditable='true'></body>"></iframe></div></div>
+<a class="btnSubmit">Submit</a>
+<div id="confirmSubWin" style="display:none"><a class="bluebtn">OK</a></div>
+<div id="prevNextFocusNext">Next</div>
+<script>
+window.automationCounters = { send:0,confirm:0,next:0 };
+document.querySelectorAll('.num_option').forEach(option=>option.addEventListener('click',()=>{
+  document.getElementById('answer1').value=option.getAttribute('data');
+}));
+document.querySelector('.btnSubmit').addEventListener('click',()=>{
+  window.automationCounters.send++;
+  document.getElementById('confirmSubWin').style.display='block';
+});
+document.querySelector('.bluebtn').addEventListener('click',()=>{
+  if(document.getElementById('answer1').value!=='A' ||
+    document.getElementById('ueditor_2').contentDocument.body.textContent!=='答案1' ||
+    document.getElementById('ueditor_3').contentDocument.body.textContent!=='参考答案')return;
+  window.automationCounters.confirm++;
+  document.querySelector('.ans-job-icon').setAttribute('aria-label','任务点已完成');
+  document.getElementById('confirmSubWin').style.display='none';
+});
+document.getElementById('prevNextFocusNext').addEventListener('click',()=>{
+  window.automationCounters.next++;
+  document.body.dataset.taskId='last';
+  document.getElementById('question1').remove();
+  document.getElementById('question2').remove();
+  document.getElementById('question3').remove();
+  document.getElementById('prevNextFocusNext').style.display='none';
+});
+</script></body></html>
