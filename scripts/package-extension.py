@@ -1,6 +1,7 @@
 """Package built extension and emit a public, relative-URL update feed. No credentials."""
 import hashlib
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -24,7 +25,7 @@ with zipfile.ZipFile(output) as archive:
         assert archive.read("extension/" + source.relative_to(dist).as_posix()) == source.read_bytes()
 digest = hashlib.sha256(output.read_bytes()).hexdigest()
 feed = {"version": manifest["version"], "zipUrl": output.name, "sha256": digest,
-        "notes": "彩色题号签到表、Markdown/图片左右双栏预览；取消本地400KB图片拒绝与旧编码预算。"}
+        "notes": os.environ.get("RELEASE_NOTES", "更新内容与安装说明请查看 GitHub 对应版本的 Release 页面。")}
 (release / "update.json").write_text(json.dumps(feed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 (release / (output.name + ".sha256")).write_text(digest + "  " + output.name + "\n", encoding="utf-8")
 print(f"Verified v{manifest['version']}: {len(files)+1} ZIP entries, {output.stat().st_size/1024/1024:.2f} MB")

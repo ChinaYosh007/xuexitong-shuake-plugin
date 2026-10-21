@@ -1,70 +1,47 @@
 # Extension updates / 扩展更新发布
 
-Version 0.2.0 provides an update dropdown on all three extension pages. ZIP users can check a public feed and download a newer release; they must replace the loaded folder and reload Chrome. Store installations use Chrome's update mechanism. The public GitHub feed and release links are listed below; there is no Chrome Web Store listing.
+Version 0.2.5 defaults to this repository's public GitHub feed. A higher version pushed to main is tested, packaged and published by GitHub Actions; the feed changes only after the published assets pass verification. Unpacked installations still require replacing files and reloading Chrome.
 
-## 使用与限制
+## 用户更新
 
-- 侧边栏、设置页、调度页顶部「更新 · v版本号」；选择商店或 ZIP 更新源。
-- ZIP：用户点击时才请求清单所属的具体 Origin 权限；仅接受 HTTPS（本机测试可用 HTTP localhost/127.0.0.1）。不自动联网检查。
-- 清单最大 16 KB，10 秒超时；验证数字版本、ZIP 地址和 SHA-256 格式；只显示更高版本，拒绝降级。
-- 请求不带供应商 Key、课程内容、Cookie；不跟随重定向。ZIP 链接作为下载链接打开，不执行远程代码，不强制 reload。
-- SHA-256 是发布者声明，界面不冒称已经验证下载内容；用户可在下载后核对。
-- 用户先停止所有运行，覆盖原目录，再在扩展管理页重新加载；不要删掉扩展后新建另一目录，避免改变扩展身份和丢失配置。
+侧边栏、设置页和调度页顶部「更新 · v版本号」默认选择「GitHub / ZIP 更新」。直接点「检查更新」，首次允许读取 raw.githubusercontent.com。无需填写清单地址。没有设置过其他来源的旧解压版默认商店配置会迁移；自定义源和显式商店设置保留。0.2.4 用户需要先手工填写下方清单或下载新版完成首次升级。
 
-Chrome 普通 Windows/macOS 用户的自动安装分发需要商店；自托管安装面向受管理的企业策略。详情见 [Chrome 分发文档](https://developer.chrome.com/docs/extensions/how-to/distribute)、[更新生命周期](https://developer.chrome.com/docs/extensions/develop/concepts/extensions-update-lifecycle)、[requestUpdateCheck](https://developer.chrome.com/docs/extensions/reference/api/runtime#method-requestUpdateCheck)。本功能不承诺解压版静默替换文件。
+发现更高版本后：下载 ZIP → 停止全部任务并关闭旧调度页 → 覆盖原先加载的 extension 文件夹 → 点「覆盖文件后，打开扩展管理页」→「重新加载」。保持原路径，不删除扩展，本机配置通常保留。版本号相同不会提示升级，也不会降级。
 
-## 开发者发布步骤
+普通 Windows/macOS 解压扩展无法静默替换自己的文件。本更新按钮提供检测、下载与管理页入口；完全自动安装需要商店分发或受管理的企业策略。见 [Chrome 分发文档](https://developer.chrome.com/docs/extensions/how-to/distribute) 和 [更新生命周期](https://developer.chrome.com/docs/extensions/develop/concepts/extensions-update-lifecycle)。目前未上架商店。
 
-1. 修改源码与测试，更新根 `package.json`、`apps/extension/package.json`、`apps/extension/manifest.base.json` 中版本号，然后 `npm install --package-lock-only --ignore-scripts` 同步锁文件；Chrome 版本须 1–4 个数字段（每段 0–65535、不得全为 0）。
-2. 执行下列命令；Node ≥20、Python 3 为开发机依赖，收包用户不需要安装这些工具。
+## 开发者发布：提高版本并推送 main
+
+例如当前为 0.2.5，下一次完成开发后：
 
 ```powershell
-npm ci
-npm run typecheck
-npm run test
-npm run test:contracts:unit
-npm run verify:contracts
-npm run build
-npm run test:fixtures
-npm run test:e2e
-npm run package:extension
+npm run version:extension -- 0.2.6
+git add .
+git commit -m "Release v0.2.6"
+git push origin main
 ```
 
-3. 打包器直接从 dist 取文件，校验 CRC 和每个文件的字节一致性，输出：
+版本命令一次同步根/扩展 package.json、Chrome manifest 与 package-lock.json 的六个版本字段。只接受更高的三段数字版本，每段不超过 65535；先验证所有旧版本一致，再写入。不执行提交、打标签或联网。
 
-```text
-release/study-assistant-extension.zip
-release/study-assistant-extension.zip.sha256
-release/update.json
-```
+`.github/workflows/release-extension.yml` 在 main 的源码、构建脚本、测试、依赖/版本、使用说明或工作流变更时执行，也可在 Actions 的 Publish extension 页面手动运行。README 等纯文档更改无需发布。流程使用仓库自带 GITHUB_TOKEN 的 contents:write，无需配置个人 Token 或供应商 Key：
 
-4. 把这三个文件放到自己的 HTTPS 静态托管目录。先上传并确认 ZIP，再上传清单，避免清单先指向不存在的包。给其他用户该目录下 `update.json` 的完整地址；这个地址不是 AI 供应商 Base URL。清单中的 zipUrl 是同目录相对路径，开发者可修改说明 notes，修改 ZIP 后须重新生成 SHA-256。
-5. 用旧版本检查此 URL，确认新版本提示、下载后摘要一致，再按使用说明覆盖重载。保留最近版本便于人工回退；菜单不会自动提供降级。
+1. 全新环境 npm ci，验证版本一致，运行类型检查、全部扩展单测、发布脚本单测、契约单测与契约检查。
+2. 构建扩展并打包。ZIP CRC 和每个构建文件逐字节验证。
+3. 创建 v版本号草稿 Release，上传 ZIP、SHA-256 文件和 update.json，最后公开发布。已公开版本的文件不覆盖；同版本代码修改不会成为新版本，必须增加版本号。同一提交留下的草稿可在重跑时继续上传；其他提交的草稿会拒绝覆盖。
+4. 从已发布 Release 重新下载三个文件，校验 ZIP、SHA-256 与包内 manifest 版本，再用 GitHub Contents API 原子写入 main/updates/update.json。下载链接自动生成绝对版本地址。版本较旧不能覆盖新清单，相同版本不能换不同包；重复运行相同发布可安全恢复清单同步。文件 SHA 冲突时失败，可重新运行。
 
-清单结构：
+检查 [Actions](https://github.com/ChinaYosh007/xuexitong-shuake-plugin/actions/workflows/release-extension.yml) 为绿色后，用户即可通过更新菜单检查到新版。推送本身并不等于发布成功；失败时已有更新清单继续可用。仓库若启用分支保护禁止机器人直接写 main，需要允许此更新或改用审核发布流程，否则最后一步会失败。
 
-```json
-{
-  "version": "0.2.0",
-  "zipUrl": "study-assistant-extension.zip",
-  "sha256": "由打包器填入实际的64位十六进制摘要",
-  "notes": "本次更新说明"
-}
-```
+自动清单提交带 `[skip ci]`，且 updates 路径不在触发范围，避免发布循环。发布串行执行，不取消进行中的发布。不重复覆盖已公开 ZIP，不自动回滚用户版本。发布工作流只允许 main。
 
-上例是结构说明，真实摘要以打包器生成文件为准。未配置Chrome商店ID或签名发布密钥；现有公开分发使用下方GitHub Release和raw更新清单。
+## 地址与隐私边界
 
+- [仓库](https://github.com/ChinaYosh007/xuexitong-shuake-plugin)
+- [最新安装包](https://github.com/ChinaYosh007/xuexitong-shuake-plugin/releases/latest)
+- [公共更新清单](https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json)
 
-## GitHub 发布地址
+清单请求仅在点击检查时发生，权限限定该来源；无凭据、无 Cookie、不带供应商 Key 或课程内容、不跟随重定向，16 KB 上限与 10 秒超时保留。只接受 HTTPS 或本机 HTTP，数字版本、ZIP 地址及 SHA-256 格式均校验。扩展只下载打包代码，不执行远程脚本，不强制重启正在运行的任务。SHA-256 在客户端显示为发布者声明，不冒称已校验用户下载的字节。
 
-仓库：https://github.com/ChinaYosh007/xuexitong-shuake-plugin
+GitHub 源码 ZIP 不含 dist，用户必须下载 Release 的 study-assistant-extension.zip。release/、node_modules、本机设置与运行记录不进入仓库。
 
-下载：https://github.com/ChinaYosh007/xuexitong-shuake-plugin/releases/latest
-
-插件「更新」菜单选择ZIP渠道，填入：
-
-```text
-https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json
-```
-
-下次发布：先运行打包器，将ZIP、SHA-256文件与release/update.json上传对应版本Release；再同步根updates/update.json，将zipUrl改为该版本Release的绝对ZIP地址，并保留打包器算出的SHA-256。清单使用raw链接，ZIP使用Release下载链接；不要给清单填github.com页面地址。源码和Release分别保存，dist/node_modules、本机配置与浏览器运行记录不入库。
+手工构建仍可执行 npm run package:extension，输出 release/study-assistant-extension.zip、对应 .sha256 与相对路径 release/update.json。仓库更新菜单使用的 main/updates/update.json 由发布流程改为对应 Release 的绝对 ZIP 地址；不要在上传安装包成功前手工提前改版本清单。

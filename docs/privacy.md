@@ -1,10 +1,12 @@
 # 隐私声明
 
-Current standalone release (0.2.4): the extension calls the configured provider directly. Provider keys are stored locally in `chrome.storage.local`, without application-level encryption. Update checks send no provider credentials or course content. The older backend contract below is preserved for history and does not describe the current distribution.
+Current standalone release (0.2.5): the extension calls the configured provider directly. Provider keys are stored locally in `chrome.storage.local`, without application-level encryption. Update checks send no provider credentials or course content. The older backend contract below is preserved for history and does not describe the current distribution.
 
 **当前独立版补充（2026-10-20，v0.2.0）**：后端、控制台和数据库已从本发行仓库移除。题目与答案在运行内存处理，由扩展直接发往用户配置的供应商；API Key 按既有本地直连设计保存在本机 `chrome.storage.local`，没有应用级加密，不能沿用下文旧后端 AES-GCM 加密承诺。手动发送和自动运行启动授权的范围不同，课程自动模式按该次授权连续处理已适配任务。
 
 更新下拉仅保存分发渠道与清单 URL；点击检查时请求具体更新源权限，获取公开版本、下载地址、说明及 SHA-256，不发送题目、答案、供应商 Key、Cookie 或本产品会话。没有后台轮询更新、静默安装、自动重载或更新遥测。更新源服务本身可看到正常网络连接信息，下载链接由浏览器打开；必须信任提供更新源的发布者。
+
+0.2.5 默认清单位于本项目 GitHub 仓库的 raw.githubusercontent.com，无需用户填写；仍只在点击检查时请求网络权限。GitHub Actions 仅处理公开源码、构建安装包和版本清单，使用 GitHub 自带令牌发布；不读取用户浏览器设置、供应商 Key 或课程数据。不新增扩展权限。
 
 **下文为历史后端版工程契约**，保留原隐私版本号以便追溯；独立版实际安装与数据流以 [使用说明](../使用说明.md) 和本段为准。
 

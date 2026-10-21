@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Study Assistant",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Privacy-first study assistant: capture one question, preview, send, review, fill verified practice pages.",
   "minimum_chrome_version": "116",
   "permissions": [

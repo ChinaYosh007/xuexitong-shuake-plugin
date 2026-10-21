@@ -145,12 +145,13 @@ describe("rendering and network boundaries", () => {
     }
   });
 
-  it("contains no non-loopback remote origins in extension source", () => {
+  it("names remote origins only in provider presets and the public update feed", () => {
     const remote = Object.entries(sources).filter(([, text]) =>
       /https?:\/\/(?!127\.0\.0\.1|localhost)[a-z0-9.-]+/i.test(text)
     );
-    // Only the local provider presets module may name public API origins.
-    expect(remote.map(([path]) => relativeKey(path))).toEqual(["local/provider.ts"]);
+    expect(remote.map(([path]) => relativeKey(path))).toEqual(["local/provider.ts", "updates/updates.ts"]);
+    const updateUrls = sourceOf("updates/updates.ts").match(/https?:\/\/[^"\s]+/g);
+    expect(updateUrls).toEqual(["https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json"]);
   });
 
   it("only injects the fixed page entry through chrome.scripting", () => {

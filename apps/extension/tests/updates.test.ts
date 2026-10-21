@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkZipRelease, isNewerVersion, parseRelease, updateUrl } from "../src/updates/updates";
+import { checkZipRelease, DEFAULT_UPDATE_FEED, isNewerVersion, loadUpdateSettings, parseRelease, updateUrl } from "../src/updates/updates";
 const digest = "a".repeat(64);
 const feed = "https://releases.example.test/update.json";
 let request: ReturnType<typeof vi.fn>, permit: ReturnType<typeof vi.fn>;
@@ -11,6 +11,26 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe("extension update checks", () => {
+  it("defaults new and legacy unpacked installations to the official GitHub feed", async () => {
+    const get = vi.fn(async () => ({}));
+    vi.stubGlobal("chrome", { storage: { local: { get } }, runtime: { getManifest: () => ({ version: "0.2.5" }) } });
+    expect(await loadUpdateSettings()).toEqual({ channel: "zip", feedUrl: DEFAULT_UPDATE_FEED });
+    get.mockResolvedValue({ studyAssistantUpdates: { channel: "browser", feedUrl: "" } });
+    expect(await loadUpdateSettings()).toEqual({ channel: "zip", feedUrl: DEFAULT_UPDATE_FEED });
+    get.mockResolvedValue({ studyAssistantUpdates: { channel: "zip", feedUrl: 42 } });
+    expect(await loadUpdateSettings()).toEqual({ channel: "zip", feedUrl: DEFAULT_UPDATE_FEED });
+  });
+  it("preserves custom feeds and explicit store settings", async () => {
+    const get = vi.fn(async () => ({ studyAssistantUpdates: { channel: "zip", feedUrl: feed } }));
+    const getManifest = vi.fn((): { update_url?: string } => ({}));
+    vi.stubGlobal("chrome", { storage: { local: { get } }, runtime: { getManifest } });
+    expect(await loadUpdateSettings()).toEqual({ channel: "zip", feedUrl: feed });
+    get.mockResolvedValue({ studyAssistantUpdates: { channel: "browser", feedUrl: feed } });
+    expect((await loadUpdateSettings()).channel).toBe("browser");
+    get.mockResolvedValue({ studyAssistantUpdates: { channel: "browser", feedUrl: "" } });
+    getManifest.mockReturnValue({ update_url: "https://clients2.google.com/service/update2/crx" });
+    expect((await loadUpdateSettings()).channel).toBe("browser");
+  });
   it("compares numeric versions without downgrades or lexicographic mistakes", () => {
     expect(isNewerVersion("1.10", "1.2.9")).toBe(true);
     expect(isNewerVersion("0.2.0.0", "0.2")).toBe(false);

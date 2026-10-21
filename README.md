@@ -8,7 +8,7 @@ Xuexitong course and question automation extension · Chrome / Edge · Bring you
 
 Release 0.2.0 adds strict answer validation, blank-field identity checks, and an update dropdown. Build and package with `npm run package:extension`. See [audit results](docs/project-audit-2026-10-20.md) and [release instructions](docs/extension-updates.md).
 
-Current release: **0.2.4**. Compact green/blue/red question board, side-by-side Markdown/image viewer, and no 400 KB image rejection in the local extension pipeline. / 当前版：彩色题号签到表、Markdown/图片左右双栏预览，取消本地400KB图像拒绝与按旧请求预算压缩原图。保留异步扫描、后台图片重试与逐题核验，见 [更新说明](docs/question-board-0.2.4.md)。
+Current release: **0.2.5**. Built-in GitHub update feed and automatic versioned release publishing. / 当前版：更新菜单已内置本仓库更新源，升级版本后推送 main 会自动测试、打包、发布 Release 并同步更新清单。保留彩色签到表、Markdown/图片双栏与大图支持，见 [更新发布说明](docs/extension-updates.md)。
 
 隐私优先的学习辅助 Chrome MV3 扩展：读取当前题目 → 预览确认 → 发送给**用户自己的** OpenAI 兼容供应商（DeepSeek 等）→ 审核答案 → 非剪贴板回填 → 回读验证。默认不保存题目与答案，不自动提交考试。
 

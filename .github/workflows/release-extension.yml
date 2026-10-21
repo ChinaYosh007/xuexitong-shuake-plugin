@@ -1,0 +1,83 @@
+name: Publish extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'package*.json'
+      - '使用说明.md'
+      - '.github/workflows/release-extension.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-extension
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate version alignment
+        id: version
+        run: echo "version=$(python scripts/version-extension.py --check)" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:release
+      - run: npm run test:contracts:unit
+      - run: npm run verify:contracts
+      - run: npm run package:extension
+      - name: Publish immutable versioned assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          gh api "repos/$GH_REPO/contents/updates/update.json?ref=main" > release/current-feed-response.json
+          python - <<'PY'
+          import base64, json, os, sys
+          sys.path.insert(0, 'scripts')
+          from importlib import import_module
+          parts = import_module('publish-update-feed').parts
+          previous = json.loads(base64.b64decode(json.load(open('release/current-feed-response.json'))['content']))
+          if parts(os.environ['VERSION']) < parts(previous['version']):
+              sys.exit('Refusing to publish an older version than the current update feed')
+          PY
+          if gh release view "$TAG" --json isDraft --jq '.isDraft' > release/is-draft.txt; then
+            if [ "$(cat release/is-draft.txt)" != "true" ]; then
+              echo "Version $VERSION is already published; its assets will not be overwritten. Bump the version for code changes."
+              exit 0
+            fi
+            # Resume only a draft belonging to this exact source commit.
+            test "$(gh release view "$TAG" --json targetCommitish --jq .targetCommitish)" = "$GITHUB_SHA"
+          else
+            gh release create "$TAG" --target "$GITHUB_SHA" --draft --title "学习通刷课插件 $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release/study-assistant-extension.zip release/study-assistant-extension.zip.sha256 release/update.json --clobber
+          gh release edit "$TAG" --draft=false --latest
+      - name: Download and validate published assets before advertising the update
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release download "v$VERSION" --dir release/published --pattern study-assistant-extension.zip --pattern study-assistant-extension.zip.sha256 --pattern update.json
+          python scripts/publish-update-feed.py --assets release/published --repository "$GH_REPO" --version "$VERSION"

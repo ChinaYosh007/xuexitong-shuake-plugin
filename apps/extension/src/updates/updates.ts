@@ -1,5 +1,6 @@
 export interface UpdateSettings { channel: "browser" | "zip"; feedUrl: string }
 export interface ReleaseInfo { version: string; zipUrl: string; notes: string; sha256: string }
+export const DEFAULT_UPDATE_FEED = "https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json";
 const SETTINGS_KEY = "studyAssistantUpdates";
 export function updateUrl(value: string, base?: string): URL {
   const url = new URL(value, base);
@@ -24,7 +25,11 @@ export function isNewerVersion(candidate: string, current: string): boolean {
 }
 export async function loadUpdateSettings(): Promise<UpdateSettings> {
   const stored = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY] as Partial<UpdateSettings> | undefined;
-  return { channel: stored?.channel === "zip" ? "zip" : "browser", feedUrl: typeof stored?.feedUrl === "string" ? stored.feedUrl : "" };
+  const customFeed = typeof stored?.feedUrl === "string" ? stored.feedUrl.trim() : "";
+  const feedUrl = customFeed || DEFAULT_UPDATE_FEED;
+  // Older unpacked builds defaulted to the store despite having no store listing.
+  const legacyDefault = !customFeed && !chrome.runtime.getManifest().update_url;
+  return { channel: stored?.channel === "browser" && !legacyDefault ? "browser" : "zip", feedUrl };
 }
 export async function saveUpdateSettings(settings: UpdateSettings): Promise<void> {
   const feedUrl = settings.feedUrl.trim();

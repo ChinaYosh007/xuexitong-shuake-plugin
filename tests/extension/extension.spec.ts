@@ -808,6 +808,38 @@ for (const videosOnly of [false, true]) {
   });
 }
 
+test("更新菜单：无需配置直接检查 GitHub 新版，旧商店默认值自动迁移", async () => {
+  const active = requireSession(), page = await active.context.newPage();
+  const official = "https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json";
+  let reads = 0;
+  // Simulate approving Chrome's native permission prompt; that prompt is outside Playwright's page DOM.
+  await page.addInitScript(() => { chrome.permissions.request = async () => true; });
+  await page.route(official, async route => {
+    reads++;
+    expect(route.request().headers().authorization).toBeUndefined();
+    expect(route.request().headers().cookie).toBeUndefined();
+    await route.fulfill({ headers: { "access-control-allow-origin": "*" }, json: { version: "0.3.0", zipUrl: "https://github.com/ChinaYosh007/xuexitong-shuake-plugin/releases/download/v0.3.0/study-assistant-extension.zip", sha256: "b".repeat(64), notes: "Synthetic official release" } });
+  });
+  await page.goto(`chrome-extension://${active.extensionId}/options.html`);
+  await page.evaluate(async () => {
+    await chrome.storage.local.set({ studyAssistantUpdates: { channel: "browser", feedUrl: "" } });
+  });
+  await page.reload();
+  const menu = page.getByTestId("update-menu");
+  await menu.locator(":scope > summary").click();
+  await expect(page.getByTestId("update-channel")).toHaveValue("zip");
+  expect(reads).toBe(0);
+  await expect(page.getByTestId("update-feed")).not.toBeVisible();
+  await page.getByTestId("update-check").click();
+  await expect(page.getByTestId("update-download")).toHaveAttribute("href", "https://github.com/ChinaYosh007/xuexitong-shuake-plugin/releases/download/v0.3.0/study-assistant-extension.zip");
+  await expect(page.getByTestId("update-open-extensions")).toBeVisible();
+  await page.getByTestId("update-open-extensions").click();
+  await expect.poll(() => active.context.pages().some(item => item.url().startsWith("chrome://extensions/"))).toBe(true);
+  expect(reads).toBe(1);
+  await page.screenshot({ path: test.info().outputPath("github-update-default.png"), fullPage: true });
+  await page.evaluate(async () => { await chrome.storage.local.remove("studyAssistantUpdates"); });
+});
+
 test("更新菜单：检查 ZIP 更新源、保留配置且不携带供应商凭据；修改 API 地址清除旧 Key", async () => {
   const active = requireSession(), page = await active.context.newPage();
   const feed = requireBackend().baseUrl + "/updates/update.json";
@@ -824,16 +856,19 @@ test("更新菜单：检查 ZIP 更新源、保留配置且不携带供应商凭
   await page.getByLabel("Base URL（API 根路径）", { exact: true }).fill(requireBackend().baseUrl + "/v1");
   await expect(page.getByLabel("API Key（本机保存）", { exact: true })).toHaveValue("");
   const menu = page.getByTestId("update-menu");
-  await menu.locator("summary").click();
-  await expect(menu.locator("summary")).toContainText("v" + String(readManifest().version));
+  await menu.locator(":scope > summary").click();
+  await expect(menu.locator(":scope > summary")).toContainText("v" + String(readManifest().version));
   await page.getByTestId("update-channel").selectOption("zip");
+  await expect(page.getByTestId("update-feed")).toHaveValue("https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json");
+  await page.getByTestId("update-advanced").locator("summary").click();
   await page.getByTestId("update-feed").fill(feed);
   await page.getByTestId("update-check").click();
   await expect(page.getByTestId("update-download")).toHaveAttribute("href", requireBackend().baseUrl + "/updates/extension.zip");
   await expect(menu).toContainText("发现新版本 0.3.0");
   await page.screenshot({ path: test.info().outputPath("update-menu-verified.png"), fullPage: true });
   advertised = "0.1.0";
-  await page.reload(); await menu.locator("summary").click();
+  await page.reload(); await menu.locator(":scope > summary").click();
+  await page.getByTestId("update-advanced").locator("summary").click();
   await expect(page.getByTestId("update-feed")).toHaveValue(feed);
   await page.getByTestId("update-check").click();
   await expect(menu).toContainText("当前版本已是该更新源的最新版本");

@@ -5,6 +5,8 @@ target/
 .env
 .env.*
 coverage/
+__pycache__/
+*.pyc
 playwright-report/
 test-results/
 .idea/
