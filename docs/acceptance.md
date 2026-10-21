@@ -1225,3 +1225,21 @@ Verified（本机）：434 扩展单测、8 发布脚本单测、11 契约单测
 Verified（公网）：源码提交 f13415e 推送后自动触发 [GitHub Actions 39526119126](https://github.com/ChinaYosh007/xuexitong-shuake-plugin/actions/runs/39526119126)，全新 Ubuntu 环境所有步骤成功，包括 npm ci、全部测试、构建、Release 公开上传及重新下载校验。机器人自动提交 767da46 同步更新清单；匿名 raw 请求已返回 0.2.5 和正确版本下载地址。
 
 本机另行从公开 v0.2.5 下载三个发布文件，确认 ZIP CRC、包内 manifest、SHA-256 文件与仓库公开清单一致。ZIP 806983 字节，SHA-256：`3b2772c560f67c033fe23cd0d8107b463396d84a6eb97e0ce032837718bd37af`。本条不宣称已完成解压版自动安装或商店上架。
+
+### 9.37 Playback, task identity and video questions / 刷课修复（2026-10-21，0.2.6）
+
+Verified locally: full extension suite 440/440; after two further persistent-pause/error regressions, runner suite 93/93. Root typecheck/build, 8 release tests, 11 contract tests and contract inventory checks passed. Five targeted MV3 browser regressions passed, including a two-clip real media chain with an initial popup, a static card and a nested media iframe carrying a conflicting num parameter. ZIP v0.2.6: 16 entries, CRC and per-file equality with dist verified by the packaging script.
+
+本地已验证：全量扩展单测440项通过；再加两项持续暂停/错误回归后，调度器93项通过。类型、构建、8项发布测试、11项契约测试及契约检查通过；5项针对性MV3浏览器回归通过。连续两段真实媒体播放、启动弹题、普通卡片寻找下一任务和嵌套媒体num干扰均已覆盖。0.2.6安装包16条目，CRC及与dist逐文件一致性通过。
+
+Unverified / 未验证：本轮无真实课程标签页；截图对应的网络提示原因、真实弹题结构与真实站点连续执行仍未验证。没有公开发布0.2.6或自动安装到用户浏览器。实现、安装方式和限制见 docs/course-playback-0.2.6.md。
+
+### 9.38 Mixed card tasks / 同一卡片非题目任务连续运行（2026-10-21，0.2.7）
+
+User clarified that an ended Java video must automatically continue through subsequent non-question task points, including PPT resources. Live read-only DOM confirmed separate marked video/work wrappers on one card. The old whole-card completion gate caused the reported stall. The new module queue binds separate keys and completion evidence, handles same-card NEXT internally, and preserves authorized skips for the later chapter notice. A video started by the run must actually end even if the site marks 90% watched early.
+
+用户根据真实Java课程截图明确要求自动处理后续非题目任务。现逐个模块处理，视频与同页测验不再共用完成状态；只刷课模式越过题目及已打开的PDF/PPT转换资料，未确认资料只计越过。实际视频ended与当前模块完成标记均须满足，已完成视频不重播。未知/未加载模块仍拒绝。
+
+Verified: 454 unit tests, typecheck/build, 8 release-script tests, 11 contract tests and contract inventory checks; final 5 MV3 browser regressions passed (52.8s), including two mixed-card real-media fixtures with first video initially unfinished/completed, one skipped quiz/resource each, zero submissions/model calls and exactly one chapter Next/confirmation. ZIP 0.2.7 has 16 entries; CRC and per-file equality with dist passed. git diff --check passed.
+
+Unverified / 未验证：新版0.2.7尚未在用户真实课程重载后执行；任意其他PPT查看器和真实强制弹题仍无证据。本地构建未推送或公开发布。证据、行为与安装方式见 docs/course-playback-0.2.7.md、compatibility6.9。

@@ -149,6 +149,8 @@ Test Files  26 passed (26)
 
 ### 6.3 视频弹题（无真实 DOM 证据，结构性枚举，2026-10-19 22:4x）
 
+2026-10-21 / 0.2.6：结构性实现补充小弹层内「嵌套选项列表＋外置确认按钮」，答错后重新读取相同选项，暂停/停止取消后续点击；启动时已有弹题先处理再播放。只在已识别 VIDEO 且播放器暂停时执行。证据为新增合成单测和真实 MV3 加载的合成媒体链路，**不构成真实学习通弹题 DOM 证据**。任务编号现限定既有 `/mooc-ans/knowledge/cards` 路径，避免媒体模块的 `num` 覆盖卡片编号；真实页面路径证据仍取自 §6.5。验证与限制见 [0.2.6 记录](course-playback-0.2.6.md)。
+
 | 项 | 值 |
 |---|---|
 | 页面来源 | 尚未取得任何真实学习通视频弹题的脱敏 DOM（此前仅观察到“可选 AI 题”按钮，非强制弹题）。本条记录的是**用户授权下的结构性实现**及其证据状态 |
@@ -231,6 +233,12 @@ Read-only DOM evidence confirms separate placeholder slots and hidden editor wra
 新增 `LAZY_UEDITOR` 仅匹配每套唯一 `.InpDIV` + `.textDIV textarea[id^=answerEditor]`、最多一个 ueditor iframe 的已观察布局。按稳定占位槽位和对应存储字段 ID 固定数量/顺序，采集不激活编辑器；回填经站点自身点击逐空打开，最多等待2.5秒同源可编辑 body 和可见 iframe，再写纯文本。编辑器工具图片不属于题干变化。异步等待后、每次写入前继续核对题文/槽位；只读、禁用、未知结构、槽位数量或顺序变化仍拒绝，不强制显示隐藏控件，不直接修改隐藏 textarea，不绕过原有守卫。
 
 验证：合成延迟初始化、全页仅一个活动编辑器的 `automation-lazy-blanks.html`；只读读取2/5/2空不点开，逆序模型返回按 blankId 分配，逐空回填核验，提交/确认仅一次。实际站点本轮未重载/执行新版，真实交互仍 Unverified；完整结果见 [修复记录](blank-editor-fix-2026-10-20.md)。
+
+### 6.9 同一卡片视频、测验与资料模块（2026-10-21，0.2.7）
+
+Read-only Java-course evidence: each `.ans-attach-ct` marked module contains one `.ans-job-icon` plus one iframe. Video and work paths are `/ananas/modules/video/index.html` and `/ananas/modules/work/index.html`. A completed video and an unfinished quiz share one card, matching the reported end-of-video stall.
+
+真实 Java 课程只读取证：`.ans-attach-ct` 中各有一个 `.ans-job-icon` 和 iframe，视频额外含 `videoContainer`，完成模块含 `ans-job-finished`；video/work使用上述固定路径。同卡片视频完成而测验未完成，与截图一致。现按模块分别绑定任务键、选择播放/读题作用域及完成标记，站点Next前先处理同卡片后续模块。PPT/PDF只复用既有PDF路径；未取得任意其他PPT皮肤证据。完整行为、用户授权、验证和限制见 [0.2.7记录](course-playback-0.2.7.md)。
 
 ## 7 权限、消息与存储边界
 

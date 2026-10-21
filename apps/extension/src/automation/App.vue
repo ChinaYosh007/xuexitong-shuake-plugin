@@ -543,7 +543,8 @@ onBeforeUnmount(() => {
       <p class="hint">默认第 1 题，后续任务自动从第 1 题开始。起始题之前保留并核验已有答案，不重复调用模型；缺答自动作答，最终失败才汇总。自动决定单次或不确定时三次复核，无需逐题选择。</p>
       <p v-if="limits" class="hint" data-testid="runner-limits">并行请求 {{ limits.perUserConcurrency > 0 ? Math.min(2, limits.perUserConcurrency) : 2 }} 个 · {{ limits.requestsPerMinute > 0 ? "每分钟最多 " + limits.requestsPerMinute + " 次" : "不限每分钟次数" }} · {{ limits.requestsPerDay > 0 ? "每日最多 " + limits.requestsPerDay + " 次" : "不限每日次数" }}（个人 Key 自担费用）</p>
       <label><input v-model="consent" type="checkbox" :disabled="running" data-testid="runner-consent" />
-        允许本次运行自动播放视频、回填并提交已适配章节任务及进入下一任务；题目图像仅在需要模型作答时发送到默认供应商，视频弹题只枚举页面选项、不发送任何内容。</label>
+        <template v-if="taskMode === 'videos'">允许本次运行自动播放视频、打开已适配的 PPT/PDF 资料、跳过题目并继续寻找下一非题目任务；未确认完成的资料只计越过，视频弹题仅在页面内处理。</template>
+        <template v-else>允许本次运行自动播放视频、回填并提交已适配章节任务及进入下一任务；题目图像仅在需要模型作答时发送到默认供应商，视频弹题只枚举页面选项、不发送任何内容。</template></label>
       <label class="hint"><input v-model="soundEnabled" type="checkbox" :disabled="running" data-testid="runner-sound" />
         声音提醒（运行出错、需要人工补答或弹题作答失败时响铃；出错每 30 秒重复，直到回到本页处理。人在别的窗口也能听到）</label>
       <div class="row">
@@ -551,7 +552,7 @@ onBeforeUnmount(() => {
           <select v-model="taskMode" :disabled="running" data-testid="runner-mode">
             <option value="course">刷课：视频＋题目</option>
             <option value="questions">刷题：仅完成题目</option>
-            <option value="videos">只刷课：仅播放视频</option>
+            <option value="videos">只刷课：视频和资料，跳过题目</option>
           </select>
         </label>
         <button class="primary" data-testid="runner-start" :disabled="running || (taskMode === 'videos' ? !readyVideosOnly : !ready)" @click="startSelectedMode">开始运行</button>
@@ -568,7 +569,7 @@ onBeforeUnmount(() => {
       <h2>{{ state.phase }} · {{ state.step }}</h2>
       <p>本轮已收集 {{ state.collected }} 题 · 当前任务共 {{ state.questionCount }} 题 · 最近处理第 {{ state.question }} 题 · 已确认完成 {{ state.completedTasks }} 个任务</p>
       <p v-if="state.videoStatus" data-testid="runner-video-status">视频任务：{{ state.videoStatus }}</p>
-      <p v-if="state.skippedResources" data-testid="runner-skipped-resources">已越过 {{ state.skippedResources }} 个无任务标记的资料/图文卡片（不计入已完成任务）</p>
+      <p v-if="state.skippedResources" data-testid="runner-skipped-resources">已越过 {{ state.skippedResources }} 个已识别的资料/图文卡片（不计入已完成任务）</p>
       <p v-if="state.skippedVideos" data-testid="runner-skipped-videos">刷题模式已跳过 {{ state.skippedVideos }} 个未完成的视频任务点（不计入已完成任务；后续可回到刷课模式补看）</p>
       <p v-if="state.skippedQuizzes" data-testid="runner-skipped-quizzes">只刷课模式已跳过 {{ state.skippedQuizzes }} 个题目任务点（不读取、不调用模型、不提交，不计入已完成任务）</p>
       <p class="counters" data-testid="runner-pipeline">

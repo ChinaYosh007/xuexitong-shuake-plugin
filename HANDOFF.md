@@ -373,3 +373,15 @@ Verified：432单测、最终9界面复测、根类型/构建；最终4/4重点M
 ### 8.25 GitHub 更新发布（2026-10-21，0.2.5）
 
 内置官方更新源，ZIP 默认与旧空白商店配置迁移；支持下载后直接打开管理页，仍需覆盖原文件夹并重新加载。main 新版本工作流自动校验/打包/公开 Release/重新下载校验/原子同步 updates/update.json。版本用 npm run version:extension -- 0.2.6 一次同步六处；相同版本不能覆盖发布文件。补齐已有测试依赖及平台可选依赖锁记录，详见 docs/extension-updates.md。Verified 本机 434 单测、8 发布单测、11 契约测试、契约检查、类型/构建和 2 项 MV3 更新检查。公网 Actions 39526119126 全绿，0.2.5 已由工作流自动发布，机器人 767da46 同步清单，匿名 raw 已返回新版；本机独立下载并核对全部发布文件、CRC/manifest/SHA，见验收9.36。
+
+## 2026-10-21 / Local 0.2.6 playback fixes
+
+The chat's working directory initially pointed to an empty folder. Work and verification were performed in the actual source repository after locating it through the project configuration.
+
+聊天工作目录最初错误指向空目录，找到实际仓库后完成工作。0.2.6修复cards任务编号被媒体num覆盖、短暂暂停/媒体错误过早停止、启动已有弹题及嵌套确认/选项重渲染处理。暂停/释放取消后续弹题点击。详见docs/course-playback-0.2.6.md与验收9.37。全量440单测、后续调度器93项、类型/构建、5项MV3回归、发布/契约检查通过。本地ZIP已逐文件校验；真实课程/网络提示原因未验证，0.2.6未推送或公开发布。
+
+## 2026-10-21 / Local 0.2.7 mixed-card automation
+
+User clarified automatic traversal of non-question tasks (video/PPT), after a real completed Java video stalled beside an unfinished quiz. course-page now queues observed .ans-attach-ct modules separately, scopes read/play/submit to the active module, keeps completed/explicitly-skipped modules distinct, and handles same-card NEXT before chapter NEXT. Earlier explicit skips survive into chapter-notice confirmation. Native video end remains required for a video started by the run, even after an early 90% completion marker.
+
+用户最新要求与边界已记AGENTS：只刷课模式现在为「视频和资料，跳过题目」，已适配且打开的PDF/PPT转换资料可越过、未确认不计完成。无新增权限或依赖；未知/未加载模块仍停止。新版本0.2.7已本地构建打包，454单测、类型/构建、5项最终MV3回归、8发布测试、11契约测试及契约检查通过，ZIP16条目逐文件校验一致。真实0.2.7重载执行及其他PPT皮肤未验证；不得把合成测试称作真实站点已通过。见docs/course-playback-0.2.7.md、compatibility6.9与验收9.38。未提交、推送或公开发布。

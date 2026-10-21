@@ -38,6 +38,25 @@ function setup(kind: TaskSnapshot["kind"] = "QUIZ") {
 afterEach(() => vi.useRealTimers());
 
 describe("pinned course task runner", () => {
+  it("videos-only mode traverses an opened resource with authorization and never counts it as completed", async () => {
+    const t = setup("RESOURCE"); t.snapshot.hasNext = true;
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "NEXT") Object.assign(t.snapshot, { taskKey: "last", kind: "COMPLETED", completed: true, hasNext: false });
+      return base(command);
+    };
+    await t.runner.start({ videosOnly: true });
+    expect(t.state.phase).toBe("DONE");
+    expect(t.state.skippedResources).toBe(1); expect(t.state.completedTasks).toBe(1);
+    expect(t.commands.find(command => command.action === "NEXT")).toMatchObject({ allowSkipUnfinished: true });
+    expect(t.actions).not.toContain("MODEL"); expect(t.actions).not.toContain("SEND_WORK");
+  });
+  it("course mode waits for a resource acknowledgement and never skips an unfinished marked document", async () => {
+    const t = setup("RESOURCE"); t.snapshot.hasNext = true;
+    await t.runner.start();
+    expect(t.state.phase).toBe("ERROR"); expect(t.state.error).toContain("尚未确认资料任务完成");
+    expect(t.state.completedTasks).toBe(0); expect(t.actions).not.toContain("NEXT");
+  });
   it("records one manual entry without blocking on other unanswered questions, then resumes after the last", async () => {
     const t = setup();
     t.port.answer = async () => ({ ...answer, status: "REFUSED" });
@@ -392,6 +411,62 @@ describe("pinned course task runner", () => {
     t.port.command = command => command.action === "PLAY" ? Promise.resolve({}) : base(command);
     await t.runner.start();
     expect(t.state.phase).toBe("ERROR"); expect(t.state.error).toContain("没有播放进展");
+    expect(t.actions).not.toContain("NEXT");
+  });
+  it("recovers from a short network pause instead of stopping after three paused polls", async () => {
+    const t = setup("VIDEO");
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "PLAY") return {};
+      if (command.action === "INSPECT") {
+        const time = t.port.now();
+        t.snapshot.video = { ...t.snapshot.video!, paused: time < 20000, error: time >= 5000 && time < 10000,
+          currentTime: Math.max(0, time - 20000) / 1000 };
+        t.snapshot.completed = time >= 30000;
+      }
+      return base(command);
+    };
+    await t.runner.start();
+    expect(t.state.phase).toBe("DONE");
+    expect(t.state.completedTasks).toBe(1);
+    expect(t.actions).not.toContain("MODEL");
+  });
+  it("handles an already-open video question before attempting playback", async () => {
+    const t = setup("VIDEO"); t.snapshot.video!.paused = true;
+    const base = t.port.command;
+    let resolved = false;
+    const actions: string[] = [];
+    t.port.command = async command => {
+      actions.push(command.action);
+      if (command.action === "ENUM_POPUP") {
+        resolved = true;
+        return { popup: { found: true, resolved: true, attempts: 2, options: 3 } };
+      }
+      if (command.action === "PLAY" && !resolved) throw new Error("弹题阻止播放");
+      return base(command);
+    };
+    await t.runner.start();
+    expect(t.state.phase).toBe("DONE");
+    expect(actions.indexOf("ENUM_POPUP")).toBeLessThan(actions.indexOf("PLAY"));
+    expect(t.actions).not.toContain("MODEL");
+  });
+  it.each([false, true])("stops a persistently paused video after the recovery window (media error: %s)", async error => {
+    const t = setup("VIDEO");
+    t.snapshot.hasNext = true;
+    t.snapshot.video = { ...t.snapshot.video!, paused: true, error };
+    const base = t.port.command;
+    const playsAt: number[] = [];
+    t.port.command = async command => {
+      if (command.action === "PLAY") { playsAt.push(t.port.now()); return {}; }
+      return base(command);
+    };
+    await t.runner.start();
+    expect(t.state.phase).toBe("ERROR");
+    expect(t.state.error).toContain("60 秒");
+    expect(t.port.now()).toBeGreaterThanOrEqual(60000);
+    expect(t.port.now()).toBeLessThan(70000);
+    expect(playsAt.slice(1).every((time, index) => time - playsAt[index]! >= 5000)).toBe(true);
+    expect(t.state.completedTasks).toBe(0);
     expect(t.actions).not.toContain("NEXT");
   });
 

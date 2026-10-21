@@ -13,7 +13,7 @@ export interface RunOptions {
   sendImages: "auto" | "always";
   /** 刷题模式: complete task points continuously but never play videos. */
   skipVideos: boolean;
-  /** 只刷课模式 (2026-10-19): play videos only; unfinished QUIZ task points are skipped with an
+  /** 只刷课模式: play videos and traverse opened PDF/PPT resources; unfinished QUIZ task points are skipped with an
    * explicit NEXT authorization instead of being answered. Mid-video popup questions (弹题)
    * are still answered by bounded page-side enumeration — they gate playback and never use the model. */
   videosOnly: boolean;
@@ -1003,12 +1003,14 @@ export class CourseRunner {
         // INSPECT 会把任务读成 UNKNOWN。与点击 Next 后的等待一致：先有界等待页面稳定，
         // 仍未知才按未适配任务停止；不再让懒加载的视频页在两种模式下都立刻报
         // 「当前任务类型尚未适配」，看起来就像根本没有自动播放。
-        if (!snapshot.completed && snapshot.kind === "UNKNOWN") {
+        const loading = (current: TaskSnapshot) => !current.completed && (current.kind === "UNKNOWN" ||
+          current.kind === "QUIZ" && current.questionCount === 0 && !options.videosOnly);
+        if (loading(snapshot)) {
           const settleDeadline = this.port.now() + 25000;
           do {
             if (!await this.delay(1000)) return;
             snapshot = await this.inspect();
-          } while (!snapshot.completed && snapshot.kind === "UNKNOWN" && this.port.now() < settleDeadline);
+          } while (loading(snapshot) && this.port.now() < settleDeadline);
         }
         const taskKeyBefore = snapshot.taskKey;
         let autoAdvanced = false;
@@ -1052,12 +1054,19 @@ export class CourseRunner {
           this.state.step = "刷题模式：跳过视频任务，直接进入下一任务点";
         } else if (!snapshot.completed && snapshot.kind === "VIDEO") {
           this.state.step = "正常播放视频，等待实际播放结束及任务完成";
+          let popupPasses = 0;
+          // A restarted run may already be parked at a forced question. Playing first can
+          // exhaust all retries before the question gets a chance to release the player.
+          if (snapshot.video?.paused && !snapshot.video.ended) {
+            const popup = await this.enumPopup();
+            if (popup.found && !popup.resolved) throw new Error(`视频弹题自动作答未通过（已枚举 ${popup.attempts}/${popup.options} 个选项，弹题仍在），请人工处理后重新启动。`);
+            if (popup.resolved) popupPasses++;
+          }
           await this.playWithRetry();
           snapshot = await this.inspect();
           if (snapshot.taskKey !== this.bound.taskKey) throw new Error("播放期间任务已变化。");
           this.state.videoStatus = this.videoStatusOf(snapshot.video);
-          let pausedChecks = 0;
-          let popupPasses = 0;
+          let lastPlayAt = this.port.now();
           let endedAt: number | null = null;
           let lastTime = snapshot.video?.currentTime ?? 0;
           let progressAt = this.port.now();
@@ -1071,9 +1080,8 @@ export class CourseRunner {
             this.state.videoStatus = this.videoStatusOf(snapshot.video);
             if (this.pausedTime !== seenPausedTime) {
               videoDeadline += this.pausedTime - seenPausedTime;
-              seenPausedTime = this.pausedTime; progressAt = this.port.now(); pausedChecks = 0;
+              seenPausedTime = this.pausedTime; progressAt = this.port.now();
             }
-            if (snapshot.video?.error) throw new Error("播放器发生错误，请人工检查。");
             if (!snapshot.video) throw new Error("监听发现播放器已移除，已停止。");
             if (snapshot.video.paused && !snapshot.video.ended) {
               // 站点弹题会暂停视频：先按 2026-10-19 授权免人工枚举作答（不调模型），再走恢复播放。
@@ -1081,7 +1089,6 @@ export class CourseRunner {
               if (popup.found && popup.resolved) {
                 if (++popupPasses > 10) throw new Error("同一视频的弹题已连续自动作答超过 10 次，已停止，请人工检查。");
                 this.state.videoStatus = `视频弹题已自动作答（枚举第 ${popup.attempts} 个选项通过），等待视频继续`;
-                pausedChecks = 0;
                 progressAt = this.port.now();
                 lastTime = snapshot.video.currentTime;
                 try { if (snapshot.video.paused) await this.playWithRetry(); } catch { /* 下一轮轮询继续恢复 */ }
@@ -1091,17 +1098,35 @@ export class CourseRunner {
             }
             if (snapshot.video.currentTime > lastTime || snapshot.completed || snapshot.video.ended) progressAt = this.port.now();
             lastTime = snapshot.video.currentTime;
-            if (this.port.now() - progressAt > 60000) throw new Error("视频超过 60 秒没有播放进展，请检查前台播放或网络要求。");
+            if (this.port.now() - progressAt > 60000) throw new Error(snapshot.video.error
+              ? "播放器错误持续超过 60 秒且没有播放进展，请检查课程页面或网络。"
+              : "视频超过 60 秒没有播放进展，请检查前台播放或网络要求。");
             if (snapshot.video?.ended) endedAt ??= this.port.now();
             if ((endedAt !== null && this.port.now() - endedAt > 60000) || this.port.now() > videoDeadline) {
               throw new Error("视频播放后站点仍未确认任务完成，请人工检查；不会跳过任务。");
             }
-            if (snapshot.video?.paused && !snapshot.video.ended) {
-              if (++pausedChecks > 2) throw new Error("视频持续暂停或需要前台播放，请回到课程页面处理。");
-              await this.playWithRetry();
-            } else pausedChecks = 0;
+            if (snapshot.video.paused && !snapshot.video.ended && this.port.now() - lastPlayAt >= 5000) {
+              // A brief network switch may pause/rebuffer several times. Use actual elapsed
+              // time without progress as the limit, rather than just three polling samples.
+              lastPlayAt = this.port.now();
+              try { await this.action("PLAY"); }
+              catch (error) { this.state.videoStatus = `正在恢复播放：${error instanceof Error ? error.message : "播放器暂未就绪"}`; }
+            }
           }
           this.state.videoStatus = "站点已确认完成";
+        } else if (!snapshot.completed && snapshot.kind === "RESOURCE") {
+          if (options.videosOnly) {
+            this.state.step = "已打开 PPT/PDF 资料，继续寻找下一个非题目任务点（未确认完成的资料仅计越过）";
+          } else {
+            this.state.step = "已打开资料任务，等待站点确认完成";
+            const deadline = this.port.now() + 60000;
+            do {
+              if (!await this.delay(1000)) return;
+              snapshot = await this.inspect();
+              if (snapshot.taskKey !== this.bound.taskKey) throw new Error("资料任务已变化。");
+            } while (!snapshot.completed && this.port.now() < deadline);
+            if (!snapshot.completed) throw new Error("站点尚未确认资料任务完成；可使用只刷课模式继续寻找非题目任务。");
+          }
         } else if (!snapshot.completed && snapshot.kind !== "MATERIAL" && snapshot.kind !== "VIDEO") {
           throw new Error("当前任务类型尚未适配，请人工处理后再启动。");
         }
@@ -1117,19 +1142,19 @@ export class CourseRunner {
         }
         const skippedVideo = options.skipVideos && snapshot.kind === "VIDEO" && !snapshot.completed;
         const skippedQuiz = options.videosOnly && snapshot.kind === "QUIZ" && !snapshot.completed;
-        const skippedResource = snapshot.kind === "MATERIAL";
+        const skippedResource = snapshot.kind === "MATERIAL" || options.videosOnly && snapshot.kind === "RESOURCE" && !snapshot.completed;
         if (skippedResource) this.state.skippedResources++;
         else if (skippedVideo) this.state.skippedVideos++;
         else if (skippedQuiz) this.state.skippedQuizzes++;
         else this.state.completedTasks++;
         if (!options.continueTasks) { this.state.phase = "DONE"; this.state.step = "当前章节刷题完成"; return; }
         if (!snapshot.hasNext) { this.state.phase = "DONE"; this.state.step = "已到最后一个任务"; return; }
-        this.state.step = snapshot.kind === "MATERIAL" ? "越过无任务标记的资料/图文卡片，寻找下一个任务点" : "进入下一个任务";
+        this.state.step = skippedResource ? "越过已识别的资料/图文卡片，寻找下一个非题目任务点" : "进入下一个任务";
         const previous = snapshot.taskKey;
         // 只有两种「故意越过未完成任务点」的 NEXT 才带页面侧跳过授权：刷题模式越过未完成视频、
         // 只刷课模式越过未完成题目；其余 NEXT 仍要求站点已确认完成或任务是无任务标记的资料页
         // （见 course-page 的 NEXT 守卫）。
-        await this.action("NEXT", (skippedVideo || skippedQuiz) ? { allowSkipUnfinished: true } : {});
+        await this.action("NEXT", (skippedVideo || skippedQuiz || skippedResource && snapshot.kind === "RESOURCE") ? { allowSkipUnfinished: true } : {});
         const deadline = this.port.now() + 25000;
         let learnedRemaining = false;
         do {
@@ -1138,7 +1163,8 @@ export class CourseRunner {
           if (snapshot.taskKey === previous) {
             // A lazy quiz can appear while leaving a video on the same card. The old
             // video skip must not become permission to skip that newly discovered quiz.
-            const confirmSkip = (skippedVideo && snapshot.kind === "VIDEO") || (skippedQuiz && snapshot.kind === "QUIZ");
+            const confirmSkip = (skippedVideo && snapshot.kind === "VIDEO") || (skippedQuiz && snapshot.kind === "QUIZ") ||
+              (skippedResource && snapshot.kind === "RESOURCE");
             const notice = await this.action("CONFIRM_NEXT", confirmSkip ? { allowSkipUnfinished: true } : {});
             if (notice.nextNotice === "LEARN_REMAINING") {
               if (recoveredNotices.has(previous)) throw new Error("同一任务重复出现未完成提示，已停止，避免循环作答。");

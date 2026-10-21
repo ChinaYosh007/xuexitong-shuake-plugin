@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { fileURLToPath } from "node:url";
 
 import {
   approveFill,
@@ -591,6 +592,66 @@ test("课程调度：刷题模式直接跳过未完成的视频任务点且不�
   // 未完成视频按「跳过」计数（不是完成），且从未点击过播放控件、没有模型请求。
   await expect(runner.getByTestId("runner-skipped-videos")).toContainText("1");
   expect(await fixture.evaluate(() => (window as unknown as { automationCounters: { play: number; next: number } }).automationCounters)).toEqual({ play: 0, next: 1 });
+  expect(requireBackend().studyAnswerRequests()).toHaveLength(0);
+});
+
+for (const completed of [false, true]) {
+  test(`课程调度：混合卡片逐个播放视频、跳过测验和资料并自动处理下一章提示（首视频完成=${completed}）`, async () => {
+    const active = requireSession();
+    const fixture = await active.context.newPage();
+    await fixture.route("**/ananas/modules/video/index.html?**", route => route.fulfill({
+      contentType: "text/html; charset=utf-8",
+      path: fileURLToPath(new URL("../fixtures/automation-video-chain-card.html", import.meta.url))
+    }));
+    await fixture.route("**/ananas/modules/work/index.html?**", route => route.fulfill({
+      contentType: "text/html; charset=utf-8", body: '<!doctype html><div id="question1"><div class="TiMu"><div class="Zy_TItle">Quiz</div></div></div><button onclick="parent.automationCounters.submit++">Submit</button>'
+    }));
+    await fixture.route("**/ananas/modules/pdf/index.html?**", route => route.fulfill({
+      contentType: "text/html; charset=utf-8", body: "<!doctype html><p>Converted PPT/PDF viewer</p>"
+    }));
+    await fixture.goto(`${requireBackend().baseUrl}/fixtures/automation-mixed-course.html?completed=${completed}`);
+    const { panel, tabId } = await openSidePanelForFixture(active.context, requireBackend(), active.extensionId, fixture);
+    await ensureLoggedIn(panel); await panel.close();
+    const runner = await active.context.newPage();
+    await runner.goto(`chrome-extension://${active.extensionId}/runner.html?tabId=${tabId}`);
+    await expect(runner.getByTestId("runner-limits")).toBeVisible();
+    await runner.getByTestId("runner-consent").check(); requireBackend().reset();
+    await runner.getByTestId("runner-mode").selectOption("videos");
+    await runner.getByTestId("runner-start").click();
+    await expect(runner.getByTestId("runner-state")).toContainText("DONE", { timeout: 45000 });
+    await expect(runner.getByTestId("runner-state")).toContainText(`已确认完成 ${completed ? 2 : 3} 个任务`);
+    await expect(runner.getByTestId("runner-skipped-quizzes")).toContainText("已跳过 1 个");
+    await expect(runner.getByTestId("runner-skipped-resources")).toContainText("已越过 1 个");
+    expect(await fixture.evaluate(() => (window as unknown as { automationCounters: unknown }).automationCounters))
+      .toEqual({ ended: completed ? 1 : 2, popupOptions: 0, next: 1, confirmNext: 1, submit: 0 });
+    expect(requireBackend().studyAnswerRequests()).toHaveLength(0);
+  });
+}
+
+test("课程调度：处理启动弹题后连续播放，越过资料并找到下一视频任务", async () => {
+  const active = requireSession();
+  const fixture = await active.context.newPage();
+  await fixture.route("**/mooc-ans/knowledge/cards?**", route => route.fulfill({
+    contentType: "text/html; charset=utf-8",
+    path: fileURLToPath(new URL("../fixtures/automation-video-chain-card.html", import.meta.url))
+  }));
+  await fixture.route("**/ananas/modules/video/index.html?**", route => route.fulfill({
+    contentType: "text/html", body: "<!doctype html><p>Player helper</p>"
+  }));
+  await fixture.goto(`${requireBackend().baseUrl}/fixtures/automation-video-chain.html`);
+  const { panel, tabId } = await openSidePanelForFixture(active.context, requireBackend(), active.extensionId, fixture);
+  await ensureLoggedIn(panel); await panel.close();
+  const runner = await active.context.newPage();
+  await runner.goto(`chrome-extension://${active.extensionId}/runner.html?tabId=${tabId}`);
+  await expect(runner.getByTestId("runner-limits")).toBeVisible();
+  await runner.getByTestId("runner-consent").check(); requireBackend().reset();
+  await runner.getByTestId("runner-mode").selectOption("videos");
+  await runner.getByTestId("runner-start").click();
+  await expect(runner.getByTestId("runner-state")).toContainText("DONE", { timeout: 45000 });
+  await expect(runner.getByTestId("runner-state")).toContainText("已确认完成 2 个任务");
+  await expect(runner.getByTestId("runner-skipped-resources")).toContainText("已越过 1 个");
+  expect(await fixture.evaluate(() => (window as unknown as { automationCounters: unknown }).automationCounters))
+    .toEqual({ next: 2, ended: 2, popupOptions: 2 });
   expect(requireBackend().studyAnswerRequests()).toHaveLength(0);
 });
 

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Continuous video fixture</title></head>
+<body data-automation-fixture="true" data-task-id="chain">
+<iframe id="iframe" src="/mooc-ans/knowledge/cards?num=0" style="width:700px;height:500px"></iframe>
+<button id="prevNextFocusNext">Next</button>
+<script>
+window.automationCounters = { next: 0, ended: 0, popupOptions: 0 };
+let card = 0;
+document.getElementById("prevNextFocusNext").addEventListener("click", () => {
+  window.automationCounters.next++;
+  document.getElementById("iframe").src = "/mooc-ans/knowledge/cards?num=" + (++card);
+  if (card === 2) document.getElementById("prevNextFocusNext").remove();
+});
+</script></body></html>

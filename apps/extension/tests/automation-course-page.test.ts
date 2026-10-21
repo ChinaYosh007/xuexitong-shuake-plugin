@@ -48,6 +48,131 @@ describe("course page adapter", () => {
       answer: { status: "ANSWERED", selectedOptionIds: ["opt_1"], blankAnswers: [], textAnswer: null, explanation: "", caveats: [] } }));
     expect(result.ok).toBe(true);
   }
+  function mixedCard(kinds: string[], completed: number[] = []) {
+    document.body.innerHTML = '<button id="prevNextFocusNext">Next</button>';
+    document.querySelector("#prevNextFocusNext")!.addEventListener("click", () => { next++; });
+    const modules = kinds.map((kind, index) => {
+      const wrapper = document.createElement("div"); wrapper.className = "ans-attach-ct";
+      const marker = document.createElement("div"); marker.className = "ans-job-icon";
+      marker.setAttribute("aria-label", completed.includes(index) ? "任务点已完成" : "任务点未完成");
+      const frame = document.createElement("iframe"); frame.src = `/ananas/modules/${kind}/index.html`;
+      wrapper.append(marker, frame); document.body.append(wrapper);
+      const doc = frame.contentDocument!;
+      doc.open(); doc.write(kind === "video" ? '<body><video></video></body>' : kind === "work" ?
+        `<body><div id="question${index + 1}"><div class="TiMu"><div class="Zy_TItle">Quiz ${index + 1}</div></div></div></body>` : '<body><p>Document</p></body>'); doc.close();
+      vi.spyOn(doc, "readyState", "get").mockReturnValue("complete");
+      const video = doc.querySelector("video");
+      const play = video ? vi.spyOn(video, "play").mockResolvedValue() : null;
+      if (video) vi.spyOn(video, "pause").mockImplementation(() => undefined);
+      return { marker, doc, video, play };
+    });
+    page = new CoursePage(document); snapshot = page.inspect();
+    return modules;
+  }
+  it("completes a video independently of its sibling quiz, then skips that quiz only with authorization", async () => {
+    const modules = mixedCard(["video", "work"]);
+    expect(snapshot).toMatchObject({ kind: "VIDEO", completed: false, questionCount: 0 });
+    modules[0]!.marker.setAttribute("aria-label", "任务点已完成");
+    expect(page.inspect()).toMatchObject({ taskKey: snapshot.taskKey, completed: true });
+    const videoKey = snapshot.taskKey;
+    expect((await page.handle(command("NEXT"))).ok).toBe(true);
+    expect(next).toBe(0);
+    snapshot = page.inspect();
+    expect(snapshot).toMatchObject({ kind: "QUIZ", completed: false, questionCount: 1 });
+    expect(snapshot.taskKey).not.toBe(videoKey);
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    expect(next).toBe(1);
+    expect(modules[1]!.marker.getAttribute("aria-label")).toBe("任务点未完成");
+    expect(sends).toBe(0);
+  });
+  it("does not replay an already-completed video while waiting for its sibling quiz", async () => {
+    const modules = mixedCard(["video", "work"], [0]);
+    expect(snapshot.kind).toBe("QUIZ");
+    expect(snapshot.video).toBeNull();
+    expect((await page.handle(command("PLAY"))).ok).toBe(false);
+    expect(modules[0]!.play).not.toHaveBeenCalled();
+  });
+  it("plays only the selected unfinished video in a card containing multiple videos", async () => {
+    const modules = mixedCard(["video", "video", "work"], [0]);
+    expect(snapshot.kind).toBe("VIDEO");
+    vi.spyOn(modules[1]!.video!, "readyState", "get").mockReturnValue(1);
+    vi.spyOn(modules[1]!.video!, "currentSrc", "get").mockReturnValue("https://example.test/video.mp4");
+    vi.spyOn(modules[1]!.video!, "duration", "get").mockReturnValue(10);
+    expect((await page.handle(command("PLAY"))).ok).toBe(true);
+    expect(modules[0]!.play).not.toHaveBeenCalled();
+    expect(modules[1]!.play).toHaveBeenCalledOnce();
+  });
+  it("does not advance an ended video without its own site completion marker", async () => {
+    const modules = mixedCard(["video", "work"]);
+    vi.spyOn(modules[0]!.video!, "ended", "get").mockReturnValue(true);
+    expect(page.inspect().completed).toBe(false);
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    expect(next).toBe(0);
+  });
+  it("waits for the real end of a video it started even when the site marks it complete at 90 percent", async () => {
+    const modules = mixedCard(["video", "work"]);
+    const video = modules[0]!.video!;
+    let ended = false;
+    vi.spyOn(video, "ended", "get").mockImplementation(() => ended);
+    vi.spyOn(video, "readyState", "get").mockReturnValue(1);
+    vi.spyOn(video, "currentSrc", "get").mockReturnValue("https://example.test/video.mp4");
+    vi.spyOn(video, "duration", "get").mockReturnValue(10);
+    expect((await page.handle(command("PLAY"))).ok).toBe(true);
+    modules[0]!.marker.setAttribute("aria-label", "任务点已完成");
+    expect(page.inspect().completed).toBe(false);
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    ended = true;
+    expect(page.inspect().completed).toBe(true);
+    expect((await page.handle(command("NEXT"))).ok).toBe(true);
+    expect(page.inspect().kind).toBe("QUIZ");
+  });
+  it("can skip a known quiz module whose question iframe is still loading without reading it", async () => {
+    const modules = mixedCard(["video", "work"], [0]);
+    modules[1]!.doc.body.replaceChildren();
+    snapshot = page.inspect();
+    expect(snapshot).toMatchObject({ kind: "QUIZ", questionCount: 0, completed: false });
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    expect(next).toBe(1); expect(sends).toBe(0);
+  });
+  it("opens a marked PDF/PPT resource and requires explicit authorization to leave it unfinished", async () => {
+    const modules = mixedCard(["pdf", "work"]);
+    expect(snapshot.kind).toBe("RESOURCE");
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    expect(page.inspect().kind).toBe("QUIZ");
+    expect(modules[0]!.marker.getAttribute("aria-label")).toBe("任务点未完成");
+    expect(next).toBe(0);
+  });
+  it("does not treat an unknown or unloaded document module as a skippable resource", async () => {
+    const modules = mixedCard(["unknown", "work"]);
+    expect(snapshot.kind).toBe("UNKNOWN");
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(false);
+    modules[0]!.marker.setAttribute("aria-label", "任务点已完成");
+  });
+  it("keeps reads scoped to one quiz module and rejects commands bound to the preceding module", async () => {
+    const modules = mixedCard(["work", "work"]);
+    const previous = command("READ_ONE", { index: 0 });
+    expect(await page.handle(previous)).toMatchObject({ ok: true, captured: { question: { stem: "Quiz 1" } } });
+    modules[0]!.marker.setAttribute("aria-label", "任务点已完成");
+    expect((await page.handle(command("NEXT"))).ok).toBe(true);
+    snapshot = page.inspect();
+    expect((await page.handle(previous)).ok).toBe(false);
+    expect(await page.handle(command("READ_ONE", { index: 0 }))).toMatchObject({ ok: true, captured: { question: { stem: "Quiz 2" } } });
+  });
+  it("retains an earlier quiz skip for the chapter notice after the last video completes", async () => {
+    const modules = mixedCard(["work", "video"]);
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    snapshot = page.inspect();
+    modules[1]!.marker.setAttribute("aria-label", "任务点已完成");
+    document.body.insertAdjacentHTML("beforeend", '<div class="jobFinishTip">There are still some unfinished tasks in the current chapter.<a class="nextChapter">Next</a><a class="popMoveDele">to learn</a></div>');
+    const skip = vi.fn(), learn = vi.fn();
+    document.querySelector(".nextChapter")!.addEventListener("click", skip);
+    document.querySelector(".popMoveDele")!.addEventListener("click", learn);
+    expect((await page.handle(command("NEXT"))).ok).toBe(true);
+    expect(await page.handle(command("CONFIRM_NEXT"))).toMatchObject({ nextNotice: "SKIP_CONFIRMED" });
+    expect(skip).toHaveBeenCalledOnce(); expect(learn).not.toHaveBeenCalled();
+  });
   it("reads one bound question without rendering, writing, or submitting", async () => {
     const result = await page.handle(command("READ_ONE", { index: 0 }));
     expect(result).toMatchObject({ ok: true, captured: { index: 0, question: { type: "SINGLE_CHOICE" } } });
@@ -527,6 +652,22 @@ describe("course page adapter", () => {
     frame.src = "/mooc-ans/knowledge/cards?num=1";
     expect(page.inspect().taskKey).not.toBe(first);
   });
+  it("does not let a nested media frame's num parameter hide a change of knowledge card", () => {
+    const frame = document.createElement("iframe");
+    frame.src = "/mooc-ans/knowledge/cards?num=0"; document.body.append(frame);
+    const appendMedia = () => {
+      const doc = frame.contentDocument!;
+      doc.open(); doc.write("<body></body>"); doc.close();
+      const media = frame.contentDocument!.createElement("iframe");
+      media.src = "/ananas/modules/video/index.html?num=0";
+      frame.contentDocument!.body.append(media);
+    };
+    appendMedia();
+    const first = page.inspect().taskKey;
+    frame.src = "/mooc-ans/knowledge/cards?num=1";
+    appendMedia();
+    expect(page.inspect().taskKey).not.toBe(first);
+  });
   function staticCard(markup = "<h2>每节一句</h2><p><span>普通补充内容</span><br></p>"): Document {
     document.querySelector("#question1")!.remove();
     document.querySelector(".ans-job-icon")!.remove();
@@ -826,6 +967,46 @@ describe("course page adapter", () => {
     const result = await page.handle(command("ENUM_POPUP"));
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.popup).toEqual({ found: false, resolved: false, attempts: 0, options: 0 });
+  });
+  it("finds a popup's sibling confirm button and re-reads options replaced after a wrong answer", async () => {
+    vi.useFakeTimers();
+    const { video } = videoPage();
+    vi.spyOn(video, "paused", "get").mockReturnValue(true);
+    const popup = document.createElement("div"); popup.setAttribute("role", "dialog");
+    const choices = `<label><input type="radio" name="popup" value="A">A. 甲</label>
+      <label><input type="radio" name="popup" value="B">B. 乙</label>`;
+    popup.innerHTML = `<p>随堂检测</p><div class="choices">${choices}</div><button>确定</button>`;
+    document.body.append(popup);
+    const committed: string[] = [];
+    popup.querySelector("button")!.addEventListener("click", () => {
+      const value = popup.querySelector<HTMLInputElement>("input:checked")?.value ?? "";
+      committed.push(value);
+      if (value === "B") popup.remove();
+      else popup.querySelector(".choices")!.innerHTML = choices;
+    });
+    const pending = page.handle(command("ENUM_POPUP"));
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(await pending).toMatchObject({ ok: true, popup: { resolved: true, attempts: 2, options: 2 } });
+    expect(committed).toEqual(["A", "B"]);
+    vi.useRealTimers();
+  });
+  it.each(["PAUSE_VIDEO", "RELEASE"] as const)("cancels in-flight popup clicks after %s", async action => {
+    vi.useFakeTimers();
+    const { video } = videoPage();
+    vi.spyOn(video, "paused", "get").mockReturnValue(true);
+    vi.spyOn(video, "pause").mockImplementation(() => undefined);
+    const popup = document.createElement("div"); popup.setAttribute("role", "dialog");
+    popup.innerHTML = `<div><label><input type="radio" name="popup" value="A">A. 甲</label>
+      <label><input type="radio" name="popup" value="B">B. 乙</label></div><button>确定</button>`;
+    document.body.append(popup);
+    const confirm = vi.fn(); popup.querySelector("button")!.addEventListener("click", confirm);
+    const pending = page.handle(command("ENUM_POPUP"));
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await page.handle(command(action))).ok).toBe(true);
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(await pending).toMatchObject({ ok: false, detail: expect.stringContaining("已取消") });
+    expect(confirm).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
   it("stops enumerating and reports failure when no option closes the popup", async () => {
     vi.useFakeTimers();

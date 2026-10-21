@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Mixed course tasks</title>
+<style>iframe{width:450px;height:230px}.jobFinishTip{padding:20px;border:1px solid}a,button{cursor:pointer}</style></head>
+<body data-automation-fixture="true" data-task-id="mixed">
+<div id="modules"></div><button id="prevNextFocusNext">Next</button>
+<div class="jobFinishTip" style="display:none">There are still some unfinished tasks in the current chapter.
+<a class="nextChapter">Next</a><a class="popMoveDele">to learn</a></div>
+<script>
+window.automationCounters = { ended: 0, popupOptions: 0, next: 0, confirmNext: 0, submit: 0 };
+const alreadyCompleted = new URLSearchParams(location.search).get("completed") === "true";
+["video", "work", "pdf", "video"].forEach((kind, index) => {
+  const wrapper = document.createElement("div"); wrapper.className = "ans-attach-ct";
+  const marker = document.createElement("div"); marker.className = "ans-job-icon";
+  marker.setAttribute("aria-label", index === 0 && alreadyCompleted ? "任务点已完成" : "任务点未完成");
+  const frame = document.createElement("iframe");
+  frame.src = "/ananas/modules/" + kind + "/index.html?num=2&module=true&slot=" + index;
+  wrapper.append(marker, frame); document.getElementById("modules").append(wrapper);
+});
+document.getElementById("prevNextFocusNext").addEventListener("click", () => {
+  window.automationCounters.next++;
+  document.querySelector(".jobFinishTip").style.display = "block";
+});
+document.querySelector(".nextChapter").addEventListener("click", () => {
+  window.automationCounters.confirmNext++;
+  document.body.dataset.taskId = "last";
+  document.body.innerHTML = '<div class="ans-job-icon" aria-label="任务点已完成"></div>';
+});
+document.querySelector(".popMoveDele").addEventListener("click", () => {
+  document.querySelector(".jobFinishTip").style.display = "none";
+});
+</script></body></html>

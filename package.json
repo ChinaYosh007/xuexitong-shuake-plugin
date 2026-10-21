@@ -1,7 +1,7 @@
 {
   "name": "study-assistant",
   "private": true,
-  "version": "0.2.5",
+  "version": "0.2.7",
   "type": "module",
   "engines": {
     "node": ">=20"

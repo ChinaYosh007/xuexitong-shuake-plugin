@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Video chain card</title>
+<style>video{width:400px;height:200px}#popup{padding:15px;border:1px solid}label{display:block}</style></head><body>
+<script>
+const card = new URLSearchParams(location.search).get("num");
+const moduleMode = new URLSearchParams(location.search).get("module") === "true";
+if (card === "1") {
+  document.body.innerHTML = '<div id="pageDiv" class="ans-cc"><h2>补充阅读</h2><p>普通静态资料</p></div>';
+} else {
+  document.body.innerHTML = moduleMode ? '<video muted></video>' : '<div class="ans-job-icon" aria-label="任务点未完成"></div>' +
+    '<video muted></video><iframe src="/ananas/modules/video/index.html?num=0"></iframe>';
+  const video = document.querySelector("video");
+  video.muted = true;
+  // A real, two-second silent PCM source: the browser advances time and fires ended.
+  const bytes = new ArrayBuffer(44 + 32000), view = new DataView(bytes);
+  const text = (offset, value) => [...value].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)));
+  text(0, "RIFF"); view.setUint32(4, bytes.byteLength - 8, true); text(8, "WAVE");
+  text(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, 8000, true); view.setUint32(28, 16000, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, "data"); view.setUint32(40, 32000, true);
+  video.src = URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+  video.addEventListener("ended", () => {
+    parent.automationCounters.ended++;
+    const marker = moduleMode ? window.frameElement.parentElement.querySelector(".ans-job-icon") : document.querySelector(".ans-job-icon");
+    marker.setAttribute("aria-label", "任务点已完成");
+  });
+  if (card === "0") {
+    const popup = document.createElement("div"); popup.id = "popup"; popup.setAttribute("role", "dialog");
+    const choices = '<label><input type="radio" name="popup" value="A">A. 甲</label>' +
+      '<label><input type="radio" name="popup" value="B">B. 乙</label>';
+    popup.innerHTML = '<p>选择正确才能继续播放</p><div class="choices">' + choices + '</div><button>确定</button>';
+    document.body.append(popup);
+    video.addEventListener("play", () => { if (popup.isConnected) video.pause(); });
+    popup.querySelector("button").addEventListener("click", () => {
+      parent.automationCounters.popupOptions++;
+      if (popup.querySelector("input:checked")?.value === "B") popup.remove();
+      else popup.querySelector(".choices").innerHTML = choices;
+    });
+  }
+}
+</script></body></html>

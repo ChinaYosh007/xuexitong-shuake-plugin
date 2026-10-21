@@ -2,7 +2,7 @@ import type { StudyAnswer, StudyQuestion } from "@study/contracts";
 import { parseReviewedAnswer } from "../shared/messages";
 import type { CommandFailureCode } from "../shared/types";
 
-export type TaskKind = "QUIZ" | "VIDEO" | "MATERIAL" | "COMPLETED" | "UNKNOWN";
+export type TaskKind = "QUIZ" | "VIDEO" | "RESOURCE" | "MATERIAL" | "COMPLETED" | "UNKNOWN";
 export interface TaskSnapshot {
   courseKey: string;
   taskKey: string;
@@ -83,7 +83,7 @@ export interface AutomationCommand {
   questionType?: StudyQuestion["type"];
   /**
    * NEXT/CONFIRM_NEXT only: an intentional skip of an unfinished task point — 刷题模式 (skipVideos) leaves a
-   * VIDEO behind, 只刷课模式 (videosOnly) leaves a QUIZ behind. The page may advance only when the
+   * VIDEO behind, 只刷课模式 (videosOnly) leaves a QUIZ or opened PDF/PPT RESOURCE behind. The page may advance only when the
    * caller states this explicitly; every other unfinished non-MATERIAL task stays refused.
    * Never set it for a task the runner is expected to complete.
    */

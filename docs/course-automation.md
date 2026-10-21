@@ -1,5 +1,17 @@
 # 课程任务自动运行（2026-10-19）
 
+## v0.2.7 混合任务卡片与非题目任务连续运行（2026-10-21）
+
+Each marked module now has its own task identity and completion check. Videos no longer wait for a sibling quiz. Course-only mode skips quizzes and traverses supported document resources.
+
+每个带标记的模块独立识别与核验完成；同一卡片的视频、测验、资料不再共用一个完成状态。视频正常结束并获站点标记后继续；只刷课模式不答题，按授权越过测验及已打开的 PDF/PPT 转换资料，未确认资料不计完成。章节未完成提示保留此前逐模块跳过的授权，避免返回同一测验形成循环。普通刷课模式仍等待资料完成回执。未知/未加载模块保持停止。详见 [验证与限制](course-playback-0.2.7.md)。
+
+## v0.2.6 播放与任务点修复（2026-10-21）
+
+Brief interruptions use a bounded recovery window. Popup questions are handled before initial playback, and knowledge-card identity ignores unrelated media-frame parameters.
+
+短暂暂停不再按三次轮询立即停止；每隔至少 5 秒尝试恢复，实际连续 60 秒无进展才停止。启动时已经弹题也先处理，支持嵌套选项列表外的确认按钮与答错后重新渲染的选项；暂停/停止取消后续弹题点击。任务编号只读取已适配 cards 路径，媒体模块的 num 不再覆盖它。站点完成核验、未知任务停止、无任务静态资料才可越过等规则保留。详见 [验证及安装说明](course-playback-0.2.6.md)。
+
 ## v0.2.4 签到表与双栏查看（2026-10-20）
 
 列表改为紧凑题号：绿＝普通源文字，蓝＝图像依赖/整图重试，红＝最终仍未回填（最高优先级，补答核验成功后恢复读取颜色）。点击题号或补答卡片的查看按钮，在同一弹窗左看Markdown、右看完整图片；异步预览不调用模型。原尺寸查看、复制下载和前后题切换保留。取消独立版本地图像400KB拒绝与原图编码合计预算；原图PNG优先保留分辨率，仅极大画布按资源预算分配，实际供应商/浏览器限制仍可能报错。见[说明](question-board-0.2.4.md)。

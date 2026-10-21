@@ -41,9 +41,12 @@ function cardIndexOf(root: Document): string {
       if (!source) continue;
       let num: string | null = null;
       try {
-        num = new URL(source, doc.location.href).searchParams.get("num");
+        const url = new URL(source, doc.location.href);
+        if (url.pathname !== "/mooc-ans/knowledge/cards") continue;
+        num = url.searchParams.get("num");
       } catch {
         // about:blank card frames make relative URLs unparsable; fall back to the raw src.
+        if (!/^\/mooc-ans\/knowledge\/cards\?/.test(source)) continue;
       }
       if (num === null || !/^\d+$/.test(num)) {
         const raw = /[?&]num=(\d+)/.exec(source);
@@ -53,6 +56,34 @@ function cardIndexOf(root: Document): string {
     }
   }
   return index;
+}
+
+function markerCompleted(marker: Element): boolean {
+  return /任务点已完成|Task\s*completed/i.test(marker.getAttribute("aria-label") ?? "");
+}
+interface CourseModule { marker: Element; root: Document | null; kind: "VIDEO" | "QUIZ" | "RESOURCE" | "UNKNOWN"; }
+/** Live Java course evidence: each marked .ans-attach-ct wraps exactly one module iframe.
+ * Keep completion scoped to that wrapper, not to unrelated quizzes on the same card. */
+function courseModules(docs: Document[]): CourseModule[] {
+  const markers = docs.flatMap(doc => [...doc.querySelectorAll(".ans-job-icon")]);
+  const modules: CourseModule[] = [];
+  for (const marker of markers) {
+    const wrapper = marker.closest(".ans-attach-ct");
+    const frames = wrapper?.querySelectorAll<HTMLIFrameElement>("iframe");
+    // Legacy/synthetic single-task layouts keep their existing adapter. Mixed unknown
+    // layouts never acquire a permission to skip merely because their content is empty.
+    if (!wrapper || wrapper.querySelectorAll(".ans-job-icon").length !== 1 || frames?.length !== 1) return [];
+    const frame = frames[0]!;
+    let path = "";
+    try { path = new URL(frame.getAttribute("src") ?? "", marker.ownerDocument.location.href).pathname; } catch { /* Unknown module. */ }
+    let root: Document | null = null;
+    try { root = frame.contentDocument; } catch { /* No cross-origin access. */ }
+    const kind = path === "/ananas/modules/video/index.html" ? "VIDEO"
+      : path === "/ananas/modules/work/index.html" ? "QUIZ"
+      : path === "/ananas/modules/pdf/index.html" ? "RESOURCE" : "UNKNOWN";
+    modules.push({ marker, root, kind });
+  }
+  return modules;
 }
 
 /** Observed knowledge-card content (compatibility §2026-10-20): #pageDiv.ans-cc
@@ -396,9 +427,15 @@ function smallestCommonAncestor(elements: HTMLElement[]): HTMLElement | null {
 }
 /** The overlay box that hosts the options, or null when walking up escapes into the page body. */
 function popupBoxOf(elements: HTMLElement[], doc: Document): HTMLElement | null {
-  let box = smallestCommonAncestor(elements);
-  while (box && box !== doc.body && (visibleText(box).length > 800 || !visible(box))) box = box.parentElement;
-  return box && box !== doc.body ? box : null;
+  const common = smallestCommonAncestor(elements);
+  if (!common || common === doc.body || !visible(common) || visibleText(common).length > 800) return null;
+  // Options are often inside a list, with the confirm button in a sibling footer.
+  // Stay inside a small overlay; never walk into the surrounding player or page controls.
+  for (let box: HTMLElement | null = common; box && box !== doc.body; box = box.parentElement) {
+    if (!visible(box) || visibleText(box).length > 800 || box.querySelector("video,iframe,[id^='question'],#prevNextFocusNext")) break;
+    if (popupConfirmButton(box) || box.getAttribute("role") === "dialog") return box;
+  }
+  return common;
 }
 function popupCandidates(doc: Document): PopupCandidate[] {
   // Never touch chapter quiz questions from the popup path: those follow the reviewed pipeline.
@@ -829,8 +866,30 @@ export class CoursePage {
   private sendAttempted = false;
   private confirmAttempted = false;
   private confirmedNextControl: HTMLElement | null = null;
+  private popupGeneration = 0;
   private priorTaskKey = "";
+  private priorCardKey = "";
+  private activeModule: number | null = null;
+  private modules: CourseModule[] = [];
+  private skippedModules = new Set<number>();
+  private moduleRoot: Document | null | undefined;
+  private startedVideos = new WeakSet<HTMLVideoElement>();
   constructor(private readonly root: Document) {}
+
+  private taskDocuments(): Document[] {
+    return this.moduleRoot === null ? [] : accessibleDocuments(this.moduleRoot ?? this.root);
+  }
+  private taskVideo(): HTMLVideoElement | null {
+    return this.moduleRoot === null ? null : currentVideo(this.moduleRoot ?? this.root);
+  }
+  private nextModule(): number {
+    return this.modules.findIndex((module, index) => index !== this.activeModule &&
+      !this.skippedModules.has(index) && !markerCompleted(module.marker));
+  }
+  private authorizedModuleSkips(): boolean {
+    return this.skippedModules.size > 0 && this.nextModule() < 0 &&
+      this.modules.every((module, index) => markerCompleted(module.marker) || this.skippedModules.has(index));
+  }
 
   inspect(): TaskSnapshot {
     const host = this.root.location.hostname;
@@ -845,6 +904,7 @@ export class CoursePage {
     if (docs.some(doc => isExamPath(doc.location.pathname))) fail("正式考试不在课程任务运行范围内。");
     const params = new URLSearchParams(this.root.location.search);
     if (workPage) {
+      this.moduleRoot = undefined;
       // 独立作业页没有课程任务链：courseKey/taskKey 由页面自身参数派生（不读取题文、不落库）。
       const courseKey = fixture ? sha256Hex("fixture|work")
         : sha256Hex(`${params.get("courseId") ?? params.get("courseid") ?? ""}|${params.get("classId") ?? params.get("clazzid") ?? ""}`);
@@ -864,26 +924,44 @@ export class CoursePage {
     }
     const cardIndex = cardIndexOf(this.root);
     const courseKey = sha256Hex(`${params.get("courseId") ?? params.get("courseid") ?? "fixture"}|${params.get("clazzid") ?? ""}`);
-    const taskKey = sha256Hex(`${courseKey}|${params.get("chapterId") ?? this.root.body.dataset.taskId ?? "current"}|${cardIndex}`);
+    const cardKey = sha256Hex(`${courseKey}|${params.get("chapterId") ?? this.root.body.dataset.taskId ?? "current"}|${cardIndex}`);
+    if (cardKey !== this.priorCardKey) {
+      this.activeModule = null; this.skippedModules.clear(); this.priorCardKey = cardKey;
+    }
+    this.modules = courseModules(docs);
+    if (this.modules.length && this.activeModule === null) {
+      const pending = this.modules.findIndex(module => !markerCompleted(module.marker));
+      this.activeModule = pending < 0 ? 0 : pending;
+    }
+    const module = this.activeModule === null ? undefined : this.modules[this.activeModule];
+    this.moduleRoot = module ? module.root : undefined;
+    const taskKey = module ? sha256Hex(`${cardKey}|module:${this.activeModule}`) : cardKey;
     if (taskKey !== this.priorTaskKey) {
       this.applied.clear(); this.sendAttempted = false; this.confirmAttempted = false;
       this.priorTaskKey = taskKey;
     }
     const markers = docs.flatMap(doc => [...doc.querySelectorAll(".ans-job-icon")]);
-    const completed = markers.length > 0 && markers.every(el => /任务点已完成|Task\s*completed/i.test(el.getAttribute("aria-label") ?? ""));
-    const work = docs.find(doc => questionElements(doc).length > 0);
+    const markedCompleted = module ? markerCompleted(module.marker) : markers.length > 0 && markers.every(markerCompleted);
+    const taskDocs = this.taskDocuments();
+    const work = taskDocs.find(doc => questionElements(doc).length > 0);
     const material = markers.length === 0 && docs.some(doc =>
       doc.location.pathname === "/ananas/modules/pdf/index.html" || staticContentCard(doc));
-    const video = currentVideo(this.root);
+    const video = this.taskVideo();
+    // Already-completed lessons need no replay. Once this run starts a video, however,
+    // a site's 90%-watched marker must not cut off its final segment.
+    const completed = markedCompleted && (!video || !this.startedVideos.has(video) || video.ended);
+    const resource = module?.kind === "RESOURCE" && taskDocs.some(doc =>
+      doc.location.pathname === "/ananas/modules/pdf/index.html" && doc.readyState === "complete");
     const next = this.root.querySelector<HTMLElement>("#prevNextFocusNext");
-    const hasNext = Boolean(next && visible(next) && !next.classList.contains("disable") && next.getAttribute("aria-disabled") !== "true");
-    return { courseKey, taskKey, kind: completed ? "COMPLETED" : work ? "QUIZ" : video ? "VIDEO" : material ? "MATERIAL" : "UNKNOWN",
+    const hasNext = this.nextModule() >= 0 || Boolean(next && visible(next) && !next.classList.contains("disable") && next.getAttribute("aria-disabled") !== "true");
+    return { courseKey, taskKey, kind: completed ? "COMPLETED" : work || module?.kind === "QUIZ" ? "QUIZ" : video ? "VIDEO"
+      : resource ? "RESOURCE" : material ? "MATERIAL" : "UNKNOWN",
       completed, questionCount: work ? questionElements(work).length : 0, hasNext,
       video: video ? { paused: video.paused, ended: video.ended, currentTime: video.currentTime,
         duration: Number.isFinite(video.duration) ? video.duration : 0, error: video.error !== null } : null };
   }
 
-  private work(): Document { return accessibleDocuments(this.root).find(doc => questionElements(doc).length) ?? fail("题目文档已变化。"); }
+  private work(): Document { return this.taskDocuments().find(doc => questionElements(doc).length) ?? fail("题目文档已变化。"); }
   private element(index: number): HTMLElement { return questionElements(this.work())[index] ?? fail("题目已变化。"); }
 
   private async describe(index: number): Promise<TaskQuestion> {
@@ -1077,25 +1155,47 @@ export class CoursePage {
    * ≤12 options and ~4.8s per option. Returns counts only — option text and answers never
    * leave the page document, and no model is called (2026-10-19 免人工枚举授权).
    */
-  private async enumVideoPopup(): Promise<PopupOutcome> {
-    const candidates = accessibleDocuments(this.root).flatMap(doc => popupCandidates(doc))
+  private async enumVideoPopup(command: AutomationCommand): Promise<PopupOutcome> {
+    const video = this.taskVideo();
+    if (!video || !video.paused || video.ended || this.inspect().kind !== "VIDEO") {
+      return { found: false, resolved: false, attempts: 0, options: 0 };
+    }
+    const generation = this.popupGeneration;
+    const check = () => {
+      const snapshot = this.inspect();
+      if (generation !== this.popupGeneration || this.owner !== command.runId ||
+          snapshot.courseKey !== command.courseKey || snapshot.taskKey !== command.taskKey) fail("弹题处理已取消或任务已变化。");
+    };
+    const find = () => this.taskDocuments().flatMap(doc => popupCandidates(doc))
       .filter(candidate => candidate.options.length >= 2 && candidate.options.length <= 12);
+    const candidates = find();
     if (!candidates.length) return { found: false, resolved: false, attempts: 0, options: 0 };
-    const popup = candidates[0]!;
-    const video = currentVideo(this.root);
+    if (candidates.length !== 1) fail("视频弹题不唯一，已停止。");
+    let popup = candidates[0]!;
     const options = popup.options.length;
+    const signature = (candidate: PopupCandidate) => candidate.options.map(option =>
+      visibleText(option.closest("label") ?? option) + "|" + (option.getAttribute("value") ?? "")).join("\n");
+    const original = signature(popup);
+    const refresh = (): boolean => {
+      check();
+      const current = find();
+      if (!current.length) return false;
+      if (current.length !== 1 || signature(current[0]!) !== original) fail("视频弹题选项已变化，已停止。");
+      popup = current[0]!;
+      return true;
+    };
     const passed = (attempt: number): PopupOutcome => ({ found: true, resolved: true, attempts: attempt, options });
     for (let index = 0; index < options; index++) {
-      // A re-render that already closed the popup counts as passed without another click.
-      if (!popup.box.isConnected || !visible(popup.box)) return passed(index);
+      if (!refresh()) return passed(index);
       clickOption(popup.options[index]!);
       await delay(300);
+      if (!refresh()) return passed(index + 1);
       const confirm = popupConfirmButton(popup.box);
       if (confirm) siteClick(confirm);
       const deadline = Date.now() + 4500;
       while (Date.now() < deadline) {
         await delay(250);
-        if (!popup.box.isConnected || !visible(popup.box)) return passed(index + 1);
+        if (!refresh()) return passed(index + 1);
         if (video && !video.paused && !video.ended) return passed(index + 1);
       }
     }
@@ -1107,12 +1207,15 @@ export class CoursePage {
       const snapshot = this.inspect();
       if (command.action === "RELEASE") {
         if (this.owner && this.owner !== command.runId) fail("此课程标签由另一个调度器持有。");
+        this.popupGeneration++;
         if (this.owner === command.runId && command.courseKey === snapshot.courseKey && command.taskKey === snapshot.taskKey) {
           for (const video of accessibleDocuments(this.root).flatMap(doc => [...doc.querySelectorAll("video")])) video.pause();
         }
         // A task change may cancel a pipeline. Its owner must still be able to release
         // the old lease, without touching a newly navigated task's media controls.
         this.owner = null; this.leaseAt = 0; this.confirmedNextControl = null;
+        this.activeModule = null; this.skippedModules.clear();
+        this.startedVideos = new WeakSet<HTMLVideoElement>();
         return { ok: true };
       }
       if (command.courseKey && (command.courseKey !== snapshot.courseKey || command.taskKey !== snapshot.taskKey)) fail("课程或任务已变化，请重新启动。");
@@ -1138,14 +1241,14 @@ export class CoursePage {
           const entry = this.applied.get(i);
           if (!entry || fingerprint(el) !== entry.fingerprint || answerDigest(readAnswer(el, entry.question)) !== entry.answer) fail("提交前回读不一致，已停止。");
         });
-        const documents = submitSearchDocuments(this.root);
+        const documents = submitSearchDocuments(this.moduleRoot ?? this.root);
         const buttons = [...new Set(documents.flatMap(submitControls))];
         if (buttons.length !== 1) fail(`无法唯一确认站点提交按钮（候选 ${buttons.length} 个，已搜索 ${documents.length} 个同源文档）。`);
         this.sendAttempted = true;
         siteClick(buttons[0]!);
       } else if (command.action === "CONFIRM_WORK") {
         if (!this.sendAttempted || this.confirmAttempted) return { ok: true };
-        for (const doc of accessibleDocuments(this.root)) {
+        for (const doc of this.taskDocuments()) {
           const button = confirmButton(doc);
           if (!button) continue;
           this.confirmAttempted = true;
@@ -1153,7 +1256,8 @@ export class CoursePage {
           break;
         }
       } else if (command.action === "CONFIRM_NEXT") {
-        const skip = command.allowSkipUnfinished === true && (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ");
+        const skip = this.authorizedModuleSkips() && snapshot.completed || command.allowSkipUnfinished === true &&
+          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE");
         const button = nextNoticeControl(this.root, skip);
         if (!button) { this.confirmedNextControl = null; return { ok: true }; }
         if (button === this.confirmedNextControl) return { ok: true };
@@ -1162,22 +1266,31 @@ export class CoursePage {
         return { ok: true, nextNotice: skip ? "SKIP_CONFIRMED" : "LEARN_REMAINING" };
       } else if (command.action === "NEXT") {
         // Intentional skips carry their own authorization: 刷题模式 (skipVideos) leaves an
-        // unfinished VIDEO behind, 只刷课模式 (videosOnly) leaves an unfinished QUIZ behind.
-        // Every other unfinished task still blocks the jump.
+        // unfinished VIDEO behind; 只刷课模式 leaves a QUIZ or an opened PDF/PPT RESOURCE
+        // behind. Unknown/unloaded modules still block the jump.
         const skipUnfinished = command.allowSkipUnfinished === true &&
-          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ");
+          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE");
         if (!snapshot.completed && snapshot.kind !== "MATERIAL" && !skipUnfinished) fail("站点尚未确认本任务完成，拒绝跳转。");
+        if (this.activeModule !== null && this.modules[this.activeModule]) {
+          if (skipUnfinished && !snapshot.completed) this.skippedModules.add(this.activeModule);
+          const upcoming = this.nextModule();
+          if (upcoming >= 0) {
+            this.taskVideo()?.pause();
+            this.popupGeneration++; this.activeModule = upcoming;
+            return { ok: true };
+          }
+        }
         const next = this.root.querySelector<HTMLElement>("#prevNextFocusNext");
         if (!snapshot.hasNext || !next) fail("没有可用的下一个任务。");
         this.confirmedNextControl = null;
         siteClick(next);
       } else if (command.action === "ENUM_POPUP") {
-        return { ok: true, popup: await this.enumVideoPopup() };
+        return { ok: true, popup: await this.enumVideoPopup(command) };
       } else if (command.action === "PLAY" || command.action === "PAUSE_VIDEO") {
-        const video = currentVideo(this.root);
+        const video = this.taskVideo();
         if (!video) fail("页面上没有可操作的播放器。");
-        if (command.action === "PAUSE_VIDEO") video.pause();
-        else await startVideo(video);
+        if (command.action === "PAUSE_VIDEO") { this.popupGeneration++; video.pause(); }
+        else { this.startedVideos.add(video); await startVideo(video); }
       }
       return { ok: true };
     } catch (error) {
