@@ -1,6 +1,6 @@
 {
-  "version": "0.2.4",
-  "zipUrl": "https://github.com/ChinaYosh007/xuexitong-shuake-plugin/releases/download/v0.2.4/study-assistant-extension.zip",
-  "sha256": "c4b8192dfbc731fe655b2f7de3e0390f4e8215bd58719c8ed08e80d1fabad103",
-  "notes": "彩色题号签到表、Markdown/图片左右双栏预览；取消本地400KB图片拒绝与旧编码预算。"
+  "version": "0.2.5",
+  "zipUrl": "https://github.com/ChinaYosh007/xuexitong-shuake-plugin/releases/download/v0.2.5/study-assistant-extension.zip",
+  "sha256": "3b2772c560f67c033fe23cd0d8107b463396d84a6eb97e0ce032837718bd37af",
+  "notes": "更新内容与安装说明请查看 GitHub 对应版本的 Release 页面。"
 }
