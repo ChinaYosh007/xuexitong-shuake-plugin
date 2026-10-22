@@ -32,6 +32,10 @@ Final command results are recorded in acceptance §9.46.
 
 最终命令结果见验收 §9.46。
 
+Follow-up / 后续多讨论修复：The user showed two discussion entries in one horizontal section. The previous exact-one check classified this as UNKNOWN and could not open either entry. The adapter now queues entries within the active task, gives each destination a stable hashed task identity, skips duplicate destinations within that document set, and processes the next entry before changing modules, tabs or chapters. No new site selector or permission was added. See acceptance §9.47 for this follow-up's checks; §9.46 records the preceding commit.
+
+用户随后反馈同一分区两条讨论卡住；现按目标地址哈希分别排队，当前任务文档内去重，优先处理下一条讨论再切换模块/分区/章节，无新增站点选择器或权限。此次检查见验收 §9.47；§9.46 为上一提交记录。
+
 Verified / 已验证：513 unit tests; 42 MV3 browser tests (3.5 min), including the seven all-mode/navigation checks on a fresh final-build copy; typecheck; build; `git diff --check`; local ZIP CRC and built-file byte equality (17 entries, 1.03 MB). No real-course end-to-end result is implied by these synthetic tests.
 
 513 项单测与 42 项 MV3 浏览器回归通过，最终构建副本的七项重点覆盖包含在其中；类型、构建、差异空白检查及本地 ZIP 核验通过。合成浏览器测试不代表真实整课已验证。

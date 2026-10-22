@@ -74,14 +74,14 @@ test("horizontal sections finish before chapter Next, with no false task complet
   expect(backend.studyAnswerRequests()).toHaveLength(0);
 });
 
-for (const mode of ["course", "questions", "videos"] as const) test(`discussion publishes once and returns to the course in ${mode} mode`, async () => {
+for (const count of [1, 2]) for (const mode of ["course", "questions", "videos"] as const) test(`${count} discussions publish once each before leaving the card in ${mode} mode`, async () => {
   await context.route("https://mooc1.chaoxing.com/**", route => {
     const url = new URL(route.request().url());
     const body = url.pathname === "/mycourse/studentstudy" ? `<iframe id="iframe" src="/mooc-ans/knowledge/cards?knowledgeid=1&num=1"></iframe><button id="prevNextFocusNext" onclick="document.querySelector('#iframe').src='/mooc-ans/knowledge/cards?knowledgeid=2&num=0';this.remove()">Next</button>` :
       url.searchParams.get("knowledgeid") === "2" ? '<div class="ans-job-icon" aria-label="任务点已完成"></div>' :
-      url.pathname === "/mooc-ans/knowledge/cards" ? '<iframe src="/ananas/modules/insertbbs/index.html"></iframe>' :
-      url.pathname === "/ananas/modules/insertbbs/index.html" ? '<iframe id="frame_content" src="/mooc-ans/bbscircle/chapter"></iframe>' :
-        `<div id="topicMainDiv" class="PublicCardBox" data="${discussionUrl}" onclick="openTopicUrl()">Discussion</div><script>function openTopicUrl(){throw new Error('Page popup unavailable');}</script>`;
+      url.pathname === "/mooc-ans/knowledge/cards" ? Array.from({ length: count }, (_, index) => `<iframe src="/ananas/modules/insertbbs/index.html?entry=${index}"></iframe>`).join("") :
+      url.pathname === "/ananas/modules/insertbbs/index.html" ? `<iframe id="frame_content" src="/mooc-ans/bbscircle/chapter?entry=${url.searchParams.get("entry") ?? "0"}"></iframe>` :
+        `<div id="topicMainDiv" class="PublicCardBox" data="${url.searchParams.get("entry") === "1" ? discussionUrl.replace("/thread/", "/thread2/") : discussionUrl}" onclick="openTopicUrl()">Discussion</div><script>function openTopicUrl(){throw new Error('Page popup unavailable');}</script>`;
     return route.fulfill({ contentType: "text/html; charset=utf-8", body: `<!doctype html><body>${body}</body>` });
   });
   await context.route("https://groupweb.chaoxing.com/**", route => route.fulfill({ contentType: "text/html; charset=utf-8", body:
@@ -97,11 +97,16 @@ for (const mode of ["course", "questions", "videos"] as const) test(`discussion 
   await test.info().attach("synthetic-child-tabs", { contentType: "application/json", body: JSON.stringify(await runner.evaluate(async () =>
     (await chrome.tabs.query({})).map(tab => ({ id: tab.id, opener: tab.openerTabId, url: tab.url, status: tab.status })))) });
   await expect(runner.getByTestId("runner-state")).toContainText("DONE", { timeout: 45000 });
-  await expect(runner.getByTestId("runner-published-discussions")).toContainText("已核验发表 1 条");
+  await expect(runner.getByTestId("runner-published-discussions")).toContainText(`已核验发表 ${count} 条`);
   await expect(runner.getByTestId("runner-state")).toContainText("已确认完成 1 个任务");
-  await expect(child.locator(".replyEdit textarea")).toHaveValue("");
-  await expect(child.locator(".topicDetail_replyItem .replyContent")).not.toBeEmpty();
-  expect(await child.evaluate(() => (window as unknown as { published: number }).published)).toBe(1);
+  const discussions = context.pages().filter(page => page.url().startsWith("https://groupweb.chaoxing.com/course/topic/"));
+  expect(discussions).toHaveLength(count);
+  expect(discussions.map(page => page.url())).toEqual(count === 1 ? [discussionUrl] : [discussionUrl, discussionUrl.replace("/thread/", "/thread2/")]);
+  for (const discussion of discussions) {
+    await expect(discussion.locator(".replyEdit textarea")).toHaveValue("");
+    await expect(discussion.locator(".topicDetail_replyItem .replyContent")).not.toBeEmpty();
+    expect(await discussion.evaluate(() => (window as unknown as { published: number }).published)).toBe(1);
+  }
   await expect(source.locator("#iframe")).toHaveAttribute("src", /knowledgeid=2/);
   if (mode === "videos") expect(backend.studyAnswerRequests()).toHaveLength(0);
   else expect(backend.studyAnswerRequests().length).toBeGreaterThan(0);

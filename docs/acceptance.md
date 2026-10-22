@@ -1351,3 +1351,21 @@ Unverified / 未验证：最终扩展真实整课、其它弹框/讨论编辑器
 Final checks / 最终结果：`npm run test:e2e` **42/42 passed (3.5 min)**, including the seven navigation/submission/publication cases on a fresh copy of the final built extension. `npm test` **513/513**; typecheck and build passed. `python scripts/package-extension.py` verified **17 ZIP entries / 1.03 MB**, CRC and dist byte equality; `git diff --check` passed. ZIP SHA-256: `42592736c911b08cf80063451a44b7237a1a9124177df29056721f4451044ccd`.
 
 最终本地安装包：`release/study-assistant-extension.zip`。先停止旧运行，覆盖原加载目录（若使用解压副本），重载扩展、刷新课程、新开调度页；讨论权限未授予时点击「授权讨论页面」。
+
+### 9.47 Multiple discussions on one card / 同一横向分区的多讨论队列（2026-10-22）
+
+The user reported a stall on a section with two discussion entries. Static inspection confirmed the exact-one entry guard: multi-entry pages became UNKNOWN and OPEN_DISCUSSION refused the list. The adapter now selects a stable active destination, processes each entry before moving to the next module/tab/chapter, and deduplicates identical destinations within the active task's document set. Destination changes alter task identity; unsupported destinations remain blocked. Queue progression still requires the runner's explicit NEXT authorization and does not count as a green course task.
+
+用户截图有两条讨论；代码中的唯一入口限制会判 UNKNOWN 并拒绝打开。现每条目标分别保持稳定任务身份，列表处理完才进入后续模块/分区/章节，同任务文档内相同目标去重。目标变化会改变任务身份，不支持的地址仍阻塞。队列推进仍须显式 NEXT 授权，不伪造绿色任务点。
+
+The existing entry selector was reused. At live read-only inspection the user's course had moved to another chapter's quiz, so the screenshot's exact DOM was not re-collected and final real-course automation is unverified. Synthetic tests cover separate nested documents and repeated IDs in a shared document, sibling reordering, duplicate destinations, invalid URLs and both one/two-entry browser flows in all three modes.
+
+复用已取证选择器，未猜测新站点控件。真站只读检查时课程已进入另一章测验，未重新取得截图当页 DOM，也未宣称最终扩展真站整课通过。合成回归覆盖不同嵌套文档、同文档重复 id、重排、地址去重、无效目标及三模式单/双讨论流程。
+
+Final execution results are recorded below after completion. No version bump or new release asset is implied by pushing this source fix; the previous source commit `f2ac3fb` was pushed to main and its GitHub workflow completed successfully.
+
+Verified / 已验证：`npm test` **517/517 (30 files)**; final focused discussion unit rerun **5/5**; `npm run test:e2e -- navigation.spec.ts` **10/10 (1.3 min)**, including one/two optional discussions in each mode and the three quiz-confirmation cases. `npm run typecheck`, `npm run build` and `git diff --check` passed. The previous full 42-case browser suite belongs to §9.46; this follow-up reran the affected 10-case navigation suite.
+
+`python scripts/package-extension.py` verified **17 ZIP entries / 1.03 MB**, CRC and dist byte equality. Final ZIP SHA-256: `0b53d70a471a8f2a640f5d4ab72aa3dc02996b9a823f5c56f238275fcd383a26`. Replace the installed unpacked copy if needed, reload the extension, refresh the course and open a fresh runner. No real full-course claim is made.
+
+最终全量单测与相关浏览器回归通过，本地包已重打并核验；真实整课仍未验证。此前 42 项全量浏览器结果为上一提交，本次没有重复无关套件。

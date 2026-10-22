@@ -1582,6 +1582,68 @@ describe("course page adapter", () => {
       tabs: 5, requested: 2, activeIndex: 1, confirmed: true, loadedNum: 1, activeLabel: "讨论" });
   });
 
+  function multipleDiscussions(sameDocument = false) {
+    sectionTabPage(2);
+    const cards = document.querySelector<HTMLIFrameElement>("#iframe")!.contentDocument!;
+    cards.body.replaceChildren();
+    const entries: HTMLElement[] = [];
+    const frames: HTMLIFrameElement[] = [];
+    for (let index = 0; index < 2; index++) {
+      let doc: Document;
+      if (sameDocument && index === 1) doc = entries[0]!.ownerDocument;
+      else {
+        const frame = cards.createElement("iframe"); frame.src = "/ananas/modules/insertbbs/index.html"; cards.body.append(frame); frames.push(frame);
+        frame.contentDocument!.open(); frame.contentDocument!.write("<body></body>"); frame.contentDocument!.close();
+        const nested = frame.contentDocument!.createElement("iframe"); nested.id = "frame_content"; nested.src = "/mooc-ans/bbscircle/chapter"; frame.contentDocument!.body.append(nested);
+        doc = nested.contentDocument!;
+        doc.open(); doc.write("<body></body>"); doc.close();
+      }
+      const entry = doc.createElement("div"); entry.id = "topicMainDiv"; entry.className = "PublicCardBox";
+      entry.setAttribute("onclick", "openTopicUrl()");
+      entry.setAttribute("data", `https://groupweb.chaoxing.com/course/topic/v3/bbs/topic/thread${index}/replysList?courseId=1&classId=2`);
+      entry.textContent = `Discussion ${index}`; doc.body.append(entry);
+      vi.spyOn(entry, "getClientRects").mockReturnValue([new DOMRect(0, 0, 100, 40)] as unknown as DOMRectList);
+      entries.push(entry);
+    }
+    page = new CoursePage(document); snapshot = page.inspect();
+    return { cards, entries, frames };
+  }
+
+  it.each([false, true])("queues every optional discussion before changing horizontal tabs (shared document=%s)", async sameDocument => {
+    const { entries } = multipleDiscussions(sameDocument);
+    expect(snapshot).toMatchObject({ kind: "DISCUSSION", completed: false, hasNext: true });
+    const first = snapshot.taskKey;
+    expect(await page.handle(command("OPEN_DISCUSSION"))).toMatchObject({ ok: true, discussionUrl: entries[0]!.getAttribute("data") });
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    snapshot = page.inspect(); expect(snapshot.kind).toBe("DISCUSSION"); expect(snapshot.taskKey).not.toBe(first);
+    expect(document.querySelector("li.active")!.id).toBe("dct3");
+    expect(await page.handle(command("OPEN_DISCUSSION"))).toMatchObject({ ok: true, discussionUrl: entries[1]!.getAttribute("data") });
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    expect(document.querySelector("li.active")!.id).toBe("dct4");
+  });
+
+  it("keeps the active discussion identity through sibling reorder and skips duplicate destinations", async () => {
+    const { entries } = multipleDiscussions(true);
+    const first = snapshot.taskKey;
+    entries[0]!.ownerDocument.body.prepend(entries[1]!);
+    expect(page.inspect().taskKey).toBe(first);
+    expect(await page.handle(command("OPEN_DISCUSSION"))).toMatchObject({ discussionUrl: entries[0]!.getAttribute("data") });
+    entries[1]!.setAttribute("data", entries[0]!.getAttribute("data")!);
+    snapshot = page.inspect();
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    expect(document.querySelector("li.active")!.id).toBe("dct4");
+  });
+
+  it("does not open an unsupported destination when advancing to the second discussion", async () => {
+    const { entries } = multipleDiscussions();
+    entries[1]!.setAttribute("data", "https://example.com/unknown");
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(true);
+    snapshot = page.inspect();
+    expect((await page.handle(command("OPEN_DISCUSSION"))).ok).toBe(false);
+    expect(document.querySelector("li.active")!.id).toBe("dct3");
+  });
+
   it("NEXT traverses horizontal sections before using the chapter Next control", async () => {
     sectionTabPage(0);
     document.body.insertAdjacentHTML("beforeend", '<button id="prevNextFocusNext">Next</button>');

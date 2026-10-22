@@ -119,6 +119,9 @@ function discussionEntries(docs: Document[]): HTMLElement[] {
     .flatMap(doc => [...doc.querySelectorAll<HTMLElement>('#topicMainDiv.PublicCardBox[onclick="openTopicUrl()"]')])
     .filter(visible);
 }
+function discussionIdentity(entry: HTMLElement): string {
+  return sha256Hex(entry.getAttribute("data") ?? "");
+}
 
 /** The site player only attaches its source after its own play button is clicked. */
 function sitePlayButton(video: HTMLVideoElement): HTMLElement | null {
@@ -1139,6 +1142,8 @@ export class CoursePage {
   private moduleSequence = 0;
   private modules: CourseModule[] = [];
   private skippedModules = new Set<Element>();
+  private activeDiscussion: string | null = null;
+  private advancedDiscussions = new Set<string>();
   private moduleRoot: Document | null | undefined;
   private startedVideos = new WeakSet<HTMLVideoElement>();
   constructor(private readonly root: Document) {}
@@ -1173,6 +1178,12 @@ export class CoursePage {
   private nextModule(): number {
     return this.modules.findIndex((module, index) => index !== this.activeModule &&
       !this.skippedModules.has(module.marker) && !markerCompleted(module.marker));
+  }
+  private nextDiscussion(): HTMLElement | undefined {
+    return discussionEntries(this.taskDocuments()).find(entry => {
+      const key = discussionIdentity(entry);
+      return key !== this.activeDiscussion && !this.advancedDiscussions.has(key);
+    });
   }
   private authorizedModuleSkips(): boolean {
     return this.skippedModules.size > 0 && this.nextModule() < 0 &&
@@ -1224,6 +1235,7 @@ export class CoursePage {
     const cardKey = sha256Hex(`${courseKey}|${chapter}|${cardIndex}`);
     if (cardKey !== this.priorCardKey) {
       this.activeModule = null; this.activeMarker = null; this.skippedModules.clear(); this.priorCardKey = cardKey;
+      this.activeDiscussion = null; this.advancedDiscussions.clear();
     }
     if (cardsLoading(this.root)) {
       return { courseKey, taskKey: cardKey, kind: "UNKNOWN", completed: false, questionCount: 0, hasNext: false, video: null };
@@ -1239,14 +1251,16 @@ export class CoursePage {
     this.activeMarker = module?.marker ?? null;
     if (module && !this.moduleIds.has(module.marker)) this.moduleIds.set(module.marker, ++this.moduleSequence);
     this.moduleRoot = module ? module.root : undefined;
-    const taskKey = module ? sha256Hex(`${cardKey}|module:${this.moduleIds.get(module.marker)}`) : cardKey;
-    if (taskKey !== this.priorTaskKey) {
-      this.applied.clear(); this.sendAttempted = false; this.confirmAttempted = false;
-      this.priorTaskKey = taskKey;
-    }
+    let taskKey = module ? sha256Hex(`${cardKey}|module:${this.moduleIds.get(module.marker)}`) : cardKey;
     const markers = docs.flatMap(doc => [...doc.querySelectorAll(".ans-job-icon")]);
     const markedCompleted = module ? markerCompleted(module.marker) : markers.length > 0 && markers.every(markerCompleted);
     const taskDocs = this.taskDocuments();
+    const discussions = discussionEntries(taskDocs);
+    if (!discussions.some(entry => discussionIdentity(entry) === this.activeDiscussion)) this.activeDiscussion = null;
+    if (this.activeDiscussion === null && discussions.length) {
+      const pending = discussions.find(entry => !this.advancedDiscussions.has(discussionIdentity(entry))) ?? discussions[0]!;
+      this.activeDiscussion = discussionIdentity(pending);
+    }
     const work = taskDocs.find(doc => questionElements(doc).length > 0);
     const material = markers.length === 0 && docs.some(doc =>
       doc.location.pathname === "/ananas/modules/pdf/index.html" || staticContentCard(doc));
@@ -1257,11 +1271,18 @@ export class CoursePage {
     const resource = module?.kind === "RESOURCE" && taskDocs.some(doc =>
       doc.location.pathname === "/ananas/modules/pdf/index.html" && doc.readyState === "complete");
     const next = this.root.querySelector<HTMLElement>("#prevNextFocusNext");
-    const hasNext = this.nextModule() >= 0 || nextSectionIndex(this.root) !== null ||
+    const hasNext = Boolean(this.nextDiscussion()) || this.nextModule() >= 0 || nextSectionIndex(this.root) !== null ||
       Boolean(next && visible(next) && !next.classList.contains("disable") && next.getAttribute("aria-disabled") !== "true");
     const kind: TaskKind = completed ? "COMPLETED" : work || module?.kind === "QUIZ" ? "QUIZ" : video ? "VIDEO"
-      : discussionEntries(taskDocs).length === 1 ? "DISCUSSION"
+      : discussions.length > 0 ? "DISCUSSION"
       : resource ? "RESOURCE" : material ? "MATERIAL" : "UNKNOWN";
+    if (discussions.length && !work && !video && (kind === "DISCUSSION" || kind === "COMPLETED")) {
+      taskKey = sha256Hex(`${taskKey}|discussion:${this.activeDiscussion}`);
+    }
+    if (taskKey !== this.priorTaskKey) {
+      this.applied.clear(); this.sendAttempted = false; this.confirmAttempted = false;
+      this.priorTaskKey = taskKey;
+    }
     const diagnostics = buildDiagnostics({ docs, markers, module, moduleCount: this.modules.length,
       activeModule: this.activeModule ?? -1, kind, video, videos: videoCandidates(this.root),
       pdfPresent: docs.some(doc => doc.location.pathname === "/ananas/modules/pdf/index.html"), root: this.root });
@@ -1526,6 +1547,7 @@ export class CoursePage {
         // the old lease, without touching a newly navigated task's media controls.
         this.owner = null; this.leaseAt = 0; this.confirmedNextControl = null;
         this.activeModule = null; this.activeMarker = null; this.skippedModules.clear();
+        this.activeDiscussion = null; this.advancedDiscussions.clear();
         this.startedVideos = new WeakSet<HTMLVideoElement>();
         return { ok: true };
       }
@@ -1584,6 +1606,13 @@ export class CoursePage {
         const skipUnfinished = command.allowSkipUnfinished === true &&
           (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE" || snapshot.kind === "DISCUSSION");
         if (!snapshot.completed && snapshot.kind !== "MATERIAL" && !skipUnfinished) fail("站点尚未确认本任务完成，拒绝跳转。");
+        // Several optional discussions can share one horizontal card without job markers.
+        // Advance within that list before leaving the module, tab or chapter.
+        if (snapshot.kind === "DISCUSSION" && this.activeDiscussion !== null) {
+          this.advancedDiscussions.add(this.activeDiscussion);
+          const upcoming = this.nextDiscussion();
+          if (upcoming) { this.activeDiscussion = discussionIdentity(upcoming); return { ok: true }; }
+        }
         if (this.activeModule !== null && this.modules[this.activeModule]) {
           if (skipUnfinished && !snapshot.completed) this.skippedModules.add(this.modules[this.activeModule]!.marker);
           const upcoming = this.nextModule();
@@ -1607,11 +1636,11 @@ export class CoursePage {
         siteClick(next);
       } else if (command.action === "OPEN_DISCUSSION") {
         if (snapshot.kind !== "DISCUSSION") fail("当前不是已适配的讨论入口。");
-        const entries = discussionEntries(this.taskDocuments());
-        if (entries.length !== 1) fail("无法唯一确认讨论入口。");
+        const entry = discussionEntries(this.taskDocuments()).find(candidate => discussionIdentity(candidate) === this.activeDiscussion);
+        if (!entry) fail("无法确认当前讨论入口。");
         // The real entry exposes its destination in `data`. Return it to the trusted
         // background instead of relying on an ungestured window.open and popup discovery.
-        const discussionUrl = entries[0]!.getAttribute("data") ?? "";
+        const discussionUrl = entry.getAttribute("data") ?? "";
         if (!isDiscussionPageUrl(discussionUrl)) fail("讨论入口缺少已适配的目标地址。");
         return { ok: true, discussionUrl };
       } else if (command.action === "ENUM_POPUP") {

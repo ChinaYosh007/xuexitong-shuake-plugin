@@ -403,3 +403,11 @@ The user explicitly included discussion publication, superseding draft-only beha
 最新明确授权覆盖仅草稿限制：所有模式提交完整已核验答案/讨论，包含二次确认；只刷课不生成缺答。最终真实整课仍未验证，真站仅浏览器工具发表过一条现有草稿用于取证。保留原有本地改动；未推送、升版本或公开发布，仍标 v0.2.7。重载扩展、刷新课程并新开调度页后使用。
 
 最终 Verified：513 单测、42 MV3 浏览器回归（3.5m，含三模式测验确认与讨论发表返回课程）、类型与构建、diff check、本地 ZIP 17 条目 CRC/逐文件一致。最终包 SHA-256 `42592736c911b08cf80063451a44b7237a1a9124177df29056721f4451044ccd`。原有 §9.45 是先前补丁记录，当前模式语义及边界以 §9.46 和最新 AGENTS 授权为准。
+
+## 2026-10-22 / Multiple discussion entries
+
+Previous work was pushed to main as f2ac3fb; GitHub workflow 39710818707 succeeded. The user's next screenshot showed two discussions on one horizontal card. Removed the exact-one assumption by queuing the active task's discussion destinations with stable hashed identities; NEXT handles the next discussion before leaving the module/tab/chapter, deduplicates repeated destinations and retains unsupported-target guards. Screenshot-page live automation remains unverified because the course had moved on. Final checks and follow-up commit: acceptance §9.47. Version remains 0.2.7; pushing source does not replace the existing release ZIP.
+
+上一批已推送且 CI 通过；本次新增同分区多讨论排队，按地址身份处理并去重，无新增权限或选择器，不伪造课程绿标，最终结果见验收 §9.47。
+
+Verified follow-up: 517 unit tests, final 5 discussion unit checks, 10 MV3 navigation tests (all modes, one/two discussions), typecheck/build/diff check and local ZIP 17-entry CRC/byte equality. ZIP SHA-256 `0b53d70a471a8f2a640f5d4ab72aa3dc02996b9a823f5c56f238275fcd383a26`. Real full-course execution remains unverified.
