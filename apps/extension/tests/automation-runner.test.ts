@@ -38,6 +38,89 @@ function setup(kind: TaskSnapshot["kind"] = "QUIZ") {
 afterEach(() => vi.useRealTimers());
 
 describe("pinned course task runner", () => {
+  it("opens a discussion child, fills and publishes once, and counts the reply separately", async () => {
+    const t = setup("DISCUSSION");
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "OPEN_DISCUSSION") Object.assign(t.snapshot, { taskKey: "discussion", kind: "QUIZ", questionCount: 1, standalone: true, discussionReply: true });
+      const result = await base(command);
+      if (command.action === "ADOPT_EXISTING") result.existingAccepted = false;
+      return result;
+    };
+    await t.runner.start();
+    expect(t.actions).toContain("OPEN_DISCUSSION"); expect(t.actions).toContain("APPLY");
+    expect(t.actions.filter(action => action === "SEND_WORK")).toHaveLength(1); expect(t.actions).not.toContain("NEXT");
+    expect(t.state).toMatchObject({ phase: "DONE", completedTasks: 0, publishedDiscussions: 1, filled: 1 });
+    expect(t.state.step).toContain("已发表");
+    await t.runner.submitNow(); await t.runner.recheckSubmission(); await t.runner.onForeground();
+    expect(t.actions.filter(action => action === "SEND_WORK")).toHaveLength(1);
+  });
+  it("preserves an existing discussion draft without charging for another answer", async () => {
+    const t = setup("QUIZ"); Object.assign(t.snapshot, { questionCount: 1, standalone: true, discussionReply: true });
+    await t.runner.start();
+    expect(t.state).toMatchObject({ phase: "DONE", retained: 1, completedTasks: 0, publishedDiscussions: 1 });
+    expect(t.actions).not.toContain("MODEL"); expect(t.actions).not.toContain("APPLY"); expect(t.actions).toContain("SEND_WORK");
+  });
+  it("rechecks delayed discussion publication without resending or counting a course task", async () => {
+    const t = setup(); Object.assign(t.snapshot, { questionCount: 1, standalone: true, discussionReply: true });
+    const base = t.port.command; let confirmed = false;
+    t.port.command = async command => {
+      const result = await base(command);
+      if (command.action === "CONFIRM_WORK") t.snapshot.completed = confirmed;
+      return result;
+    };
+    await t.runner.start(); expect(t.state.phase).toBe("ERROR");
+    confirmed = true; await t.runner.recheckSubmission();
+    expect(t.state).toMatchObject({ phase: "DONE", completedTasks: 0, publishedDiscussions: 1 });
+    expect(t.actions.filter(action => action === "SEND_WORK")).toHaveLength(1);
+    await t.runner.recheckSubmission(); expect(t.state.publishedDiscussions).toBe(1);
+  });
+  it("publishes an existing discussion reply in videos-only mode without calling the model", async () => {
+    const t = setup("DISCUSSION"); t.snapshot.hasNext = true;
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "OPEN_DISCUSSION") Object.assign(t.snapshot, { taskKey: "discussion", kind: "QUIZ", questionCount: 1, standalone: true, discussionReply: true });
+      return base(command);
+    };
+    await t.runner.start({ videosOnly: true });
+    expect(t.state).toMatchObject({ phase: "DONE", skippedQuizzes: 0, completedTasks: 0, publishedDiscussions: 1 });
+    expect(t.actions).toContain("OPEN_DISCUSSION"); expect(t.actions).not.toContain("MODEL"); expect(t.actions).toContain("SEND_WORK");
+  });
+  it("returns to the same course after publication and advances without inventing a completed task point", async () => {
+    const t = setup("DISCUSSION"); t.snapshot.hasNext = true;
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "OPEN_DISCUSSION") Object.assign(t.snapshot, { taskKey: "discussion", kind: "QUIZ", questionCount: 1, standalone: true, discussionReply: true });
+      if (command.action === "NEXT") Object.assign(t.snapshot, { taskKey: "last", kind: "COMPLETED", completed: true, hasNext: false });
+      return base(command);
+    };
+    t.port.returnToCourse = async () => { Object.assign(t.snapshot, { taskKey: "one", kind: "DISCUSSION", questionCount: 0, standalone: false, discussionReply: false, completed: false }); };
+    await t.runner.start();
+    expect(t.state).toMatchObject({ phase: "DONE", completedTasks: 1, publishedDiscussions: 1 });
+    expect(t.commands.find(command => command.action === "NEXT")).toMatchObject({ taskKey: "one", allowSkipUnfinished: true });
+    expect(t.actions.filter(action => action === "SEND_WORK")).toHaveLength(1);
+  });
+  it.each([{}, { skipVideos: true }, { videosOnly: true }])("automatically submits and confirms complete quiz answers in mode %j", async options => {
+    const t = setup(); await t.runner.start(options);
+    expect(t.state).toMatchObject({ phase: "DONE", completedTasks: 1 });
+    expect(t.actions.filter(action => action === "SEND_WORK")).toHaveLength(1);
+    expect(t.actions).toContain("CONFIRM_WORK");
+    if (options.videosOnly) expect(t.actions).not.toContain("MODEL");
+  });
+  it("survives transient inspection failures after Next without replaying navigation", async () => {
+    const t = setup("MATERIAL"); t.snapshot.hasNext = true; let misses = 0; let navigating = false;
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "NEXT") navigating = true;
+      if (command.action === "INSPECT" && navigating) {
+        if (++misses <= 3) throw new Error("Frame navigating");
+        Object.assign(t.snapshot, { taskKey: "last", kind: "COMPLETED", completed: true, hasNext: false });
+      }
+      return base(command);
+    };
+    await t.runner.start();
+    expect(t.state.phase).toBe("DONE"); expect(t.actions.filter(action => action === "NEXT")).toHaveLength(1);
+  });
   it("videos-only mode traverses an opened resource with authorization and never counts it as completed", async () => {
     const t = setup("RESOURCE"); t.snapshot.hasNext = true;
     const base = t.port.command;
@@ -150,6 +233,25 @@ describe("pinned course task runner", () => {
     expect(t.state.completedTasks).toBe(1);
   });
 
+  it("dwells about 2s after a confirmed chapter-quiz submit before advancing to the next task", async () => {
+    const t = setup();
+    t.snapshot.hasNext = true;
+    let nowAtSend = -1; let nowAtNext = -1;
+    const base = t.port.command;
+    t.port.command = async command => {
+      if (command.action === "SEND_WORK") nowAtSend = t.port.now();
+      if (command.action === "NEXT") {
+        nowAtNext = t.port.now();
+        Object.assign(t.snapshot, { taskKey: "last", kind: "COMPLETED", completed: true, hasNext: false });
+      }
+      return base(command);
+    };
+    await t.runner.start();
+    expect(t.actions.filter(a => a === "SEND_WORK")).toHaveLength(1);
+    expect(t.actions).toContain("NEXT");
+    expect(nowAtNext - nowAtSend).toBeGreaterThanOrEqual(2000);
+  });
+
   it("accepts consistent answers that carry caveats instead of forcing manual input", async () => {
     const t = setup();
     t.port.answer = async () => ({ ...answer, caveats: ["题目表述不够严谨"] });
@@ -224,6 +326,69 @@ describe("pinned course task runner", () => {
     expect(t.actions).toContain("PLAY");
     expect(t.actions).not.toContain("MODEL");
     expect(t.state.phase).toBe("DONE");
+  });
+
+  it("seeks a site-permitted video to its tail and advances only on the site's own completion marker", async () => {
+    const t = setup("VIDEO");
+    let seeks = 0;
+    t.port.command = async command => {
+      t.actions.push(command.action); t.commands.push(command);
+      if (command.action === "SEEK_TAIL") { seeks++; t.snapshot.video = { ...t.snapshot.video!, currentTime: 58 };
+        return { seek: { seekable: true, applied: true, currentTime: 58, duration: 60, reason: "ok" } }; }
+      if (command.action === "PLAY") return {};
+      if (command.action === "INSPECT") {
+        if (seeks > 0 && (t.snapshot.video?.currentTime ?? 0) >= 58) t.snapshot.completed = true;
+        return { snapshot: { ...t.snapshot } };
+      }
+      return {};
+    };
+    await t.runner.start({ allowVideoSeek: true, videoSeekPolicy: "allowed" });
+    expect(seeks).toBe(1);
+    expect(t.actions).toContain("SEEK_TAIL");
+    expect(t.actions).not.toContain("PLAY_FROM_START");
+    expect(t.actions).not.toContain("MODEL");
+    expect(t.state.videoSeekPolicy).toBe("allowed");
+    expect(t.state.phase).toBe("DONE");
+    expect(t.state.completedTasks).toBe(1);
+  });
+
+  it("rolls back to full playback when the site rejects the seek by rewinding progress", async () => {
+    const t = setup("VIDEO");
+    let seeks = 0; let rewound = false;
+    t.port.command = async command => {
+      t.actions.push(command.action); t.commands.push(command);
+      if (command.action === "SEEK_TAIL") { seeks++; return { seek: { seekable: true, applied: true, currentTime: 58, duration: 60, reason: "ok" } }; }
+      if (command.action === "PLAY") {
+        if (!rewound) { rewound = true; t.snapshot.video = { ...t.snapshot.video!, currentTime: 0 }; }
+        else { t.snapshot.completed = true; t.snapshot.video = { ...t.snapshot.video!, ended: true, currentTime: 10 }; }
+        return {};
+      }
+      if (command.action === "PLAY_FROM_START") { t.snapshot.video = { ...t.snapshot.video!, currentTime: 0 }; return {}; }
+      if (command.action === "INSPECT") return { snapshot: { ...t.snapshot } };
+      return {};
+    };
+    await t.runner.start({ allowVideoSeek: true, videoSeekPolicy: "allowed" });
+    expect(seeks).toBe(1);
+    expect(t.actions).toContain("PLAY_FROM_START");
+    expect(t.state.videoSeekPolicy).toBe("denied");
+    expect(t.state.phase).toBe("DONE");
+    expect(t.state.completedTasks).toBe(1);
+  });
+
+  it("scrolls an unfinished PPT/PDF material to its bottom once so the site can confirm completion", async () => {
+    const t = setup("RESOURCE");
+    let scrolls = 0;
+    t.port.command = async command => {
+      t.actions.push(command.action); t.commands.push(command);
+      if (command.action === "SCROLL_MATERIAL") { scrolls++; return { scroll: { containerFound: true, scrolled: true, reachedBottom: true, steps: 5 } }; }
+      if (command.action === "INSPECT") { if (scrolls > 0) t.snapshot.completed = true; return { snapshot: { ...t.snapshot } }; }
+      return {};
+    };
+    await t.runner.start({ allowMaterialScroll: true });
+    expect(scrolls).toBe(1);
+    expect(t.actions).not.toContain("MODEL");
+    expect(t.state.phase).toBe("DONE");
+    expect(t.state.completedTasks).toBe(1);
   });
 
   it("stops for an unknown task instead of silently skipping it", async () => {
@@ -659,13 +824,13 @@ describe("pinned course task runner", () => {
     expect(t.actions.filter(action => action === "APPLY")).toHaveLength(1);
   });
 
-  it("submitNow clicks the site submit button and waits for the completion marker", async () => {
+  it("submitNow never resubmits or recounts an already completed run", async () => {
     const t = setup(); t.snapshot.questionCount = 1;
     await t.runner.start({ continueTasks: false });
     const before = t.actions.filter(action => action === "SEND_WORK").length;
     await t.runner.submitNow();
-    expect(t.actions.filter(action => action === "SEND_WORK").length).toBe(before + 1);
-    expect(t.state.step).toContain("站点已确认提交成功");
+    expect(t.actions.filter(action => action === "SEND_WORK").length).toBe(before);
+    expect(t.state.completedTasks).toBe(1);
   });
 
   it("auto-submits and continues the chain after manual补答 when the run stopped in ERROR", async () => {
@@ -1208,6 +1373,7 @@ describe("pinned course task runner", () => {
     const base = t.port.command; let pending = false;
     t.port.command = async command => {
       const result = await base(command);
+      if (command.action === "ADOPT_EXISTING") result.existingAccepted = false;
       if (command.action === "NEXT") pending = true;
       if (command.action === "CONFIRM_NEXT" && pending) {
         expect(command.allowSkipUnfinished).toBe(true); pending = false;
@@ -1344,7 +1510,7 @@ describe("pinned course task runner", () => {
     expect(t.state.phase).toBe("DONE");
   });
 
-  it("videos-only mode skips an unfinished quiz with an explicit NEXT permission and never reads or calls the model", async () => {
+  it("videos-only mode skips an incomplete quiz with an explicit NEXT permission and never calls the model", async () => {
     const t = setup("QUIZ"); t.snapshot.hasNext = true;
     const base = t.port.command;
     t.port.command = async command => {
@@ -1353,7 +1519,9 @@ describe("pinned course task runner", () => {
         t.snapshot.completed = true; t.snapshot.hasNext = false;
         t.snapshot.video = { paused: false, ended: true, currentTime: 5, duration: 5, error: false };
       }
-      return base(command);
+      const result = await base(command);
+      if (command.action === "ADOPT_EXISTING") result.existingAccepted = false;
+      return result;
     };
     await t.runner.start({ videosOnly: true });
     const nexts = t.commands.filter(command => command.action === "NEXT");
@@ -1531,15 +1699,16 @@ describe("pinned course task runner", () => {
     expect(t.actions).not.toContain("NEXT");
   });
 
-  it("refuses 只刷课模式 on a standalone 作业/测验 page instead of touching the quiz", async () => {
+  it("submits complete existing standalone work in videos-only mode without generating answers", async () => {
     const t = setup();
     t.snapshot.standalone = true;
     t.snapshot.taskKey = "work-one";
     await t.runner.start({ videosOnly: true });
-    expect(t.state.phase).toBe("ERROR");
-    expect(t.state.error).toContain("只刷课模式");
+    expect(t.state.phase).toBe("DONE");
+    expect(t.state.completedTasks).toBe(1);
+    expect(t.actions).not.toContain("MODEL");
     expect(t.actions).not.toContain("READ_ALL");
-    expect(t.actions).not.toContain("SEND_WORK");
+    expect(t.actions).toContain("SEND_WORK");
   });
 
   it("does not re-answer an already submitted standalone 作业/测验 page", async () => {

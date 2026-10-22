@@ -8,6 +8,12 @@ Current standalone release (0.2.5): the extension calls the configured provider 
 
 0.2.5 默认清单位于本项目 GitHub 仓库的 raw.githubusercontent.com，无需用户填写；仍只在点击检查时请求网络权限。GitHub Actions 仅处理公开源码、构建安装包和版本清单，使用 GitHub 自带令牌发布；不读取用户浏览器设置、供应商 Key 或课程数据。不新增扩展权限。
 
+**当前独立版补充（2026-10-21，0.2.8 M0 诊断与声音）**：运行页新增「复制诊断行」，用于在提交卡住或页面异常时安全地把结构化状态反馈给维护者。该行只包含结构性计数与简短枚举——文档数、iframe 数、cards 帧数与 `num` 是否存在、模块数、模块 kind、活动模块序号、异常计数、任务点标记「已完成/总数/不可读」计数、视频数与 `readyState/seekable/currentTime/duration/是否结束/是否暂停`、PDF 就绪布尔、可滚动候选数、提交候选数——外加运行状态计数（阶段、已完成数、各类跳过数）。诊断行**绝不包含**题干、选项、答案、解析、完整页面 URL、HTML、课程名称或标识、姓名学号、Cookie 或任何供应商 Key；这些字段也不进入 `TaskSnapshot.diagnostics`。声音告警可使用随扩展一起打包的本机音频文件（`apps/extension/sounds/`，构建时拷贝进 `dist/sounds/`），仅在浏览器本地解码播放，**不上传、不联网获取**；扩展页面 CSP 无 `media-src` 且 `connect-src` 仅指向后端，因此音频通过 `chrome.runtime.getURL` 直接播放而非 `fetch`，不会产生额外的对外网络请求。
+
+**当前独立版补充（2026-10-21，0.2.8 M1 运行偏好）**：运行页把「视频定位末尾」「资料滚动」开关、声音开关、告警音量与**按课程记忆的可拖性**持久化到本机 `chrome.storage.local`，写入封装在可信模块 `api/settings.ts`（运行页不直接访问 `chrome.storage`）。存储内容仅为若干布尔、0–1 音量数值，以及一张把课程标识映射到 `allowed`/`denied`/`unknown` 枚举的表，**不含题干、选项、答案、解析、Cookie、令牌或供应商 Key**，只在浏览器本机读写、不上传，更新检查也不会携带这些数据。
+
+**当前独立版补充（2026-10-21，0.2.8 M1 横向标签导航）**：`SWITCH_SECTION_TAB` 只调用站点自身的**同源**页签切换（`li#dct{tab}` 的 inline `changeDisplayContent`），其返回 `SectionTabsOutcome` 仅含结构性计数——标签总数、请求序号、当前活动序号、是否确认的布尔、内容 cards 帧的数值 `num`，外加 `activeLabel`：至多 12 字、来自站点自身标签栏的**通用分区名**（如「讨论」），**不是**课程名称或任何题干文本。整个过程不涉及题干、选项、答案、完整 URL、HTML、Cookie 或标识。跨源的 groupweb 讨论自动回帖本批未启用，故没有任何回帖内容离开页面。
+
 **下文为历史后端版工程契约**，保留原隐私版本号以便追溯；独立版实际安装与数据流以 [使用说明](../使用说明.md) 和本段为准。
 
 0.2.4签到表和双栏窗口沿用本任务内存缓存，不新增持久化/遥测；打开图片窗口不会发送模型请求，较大题图仍只发往用户已配置供应商。
@@ -164,5 +170,11 @@ Current standalone release (0.2.5): the extension calls the configured provider 
 ## 12 与规格的一致性
 
 本声明对应 `docs/architecture.md` §1.3、§20 与 `AGENTS.md` 的硬性约束。任何“无数据上传”“零知识”“完全匿名”“供应商零保留”等超出上述事实的表述都不得用于本产品宣传。
+
+## 13 自动提交与讨论发表（2026-10-22）
+
+The authorized runner submits verified quiz answers and publishes discussion replies to the bound Chaoxing course. Course/question modes use the selected provider for missing answers; videos-only submits existing complete answers/drafts without model calls. Discussion text and publication evidence remain in memory; no new credentials, telemetry or browser permissions are collected.
+
+用户授权运行后，完整核验的测验答案与讨论回复会提交到当前绑定的学习通课程。刷课/刷题的缺答通过用户所选供应商生成；只刷课仅提交已有完整答案/草稿，不调用模型。讨论文字及发表核验证据仅在内存处理，不新增凭据采集、遥测或浏览器权限。
 
 > 本文是工程隐私契约，不构成法律意见。面向终端用户的部署页面应补充运营者主体、联系方式、适用法域与投诉渠道。

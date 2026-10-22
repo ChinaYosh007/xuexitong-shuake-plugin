@@ -119,4 +119,4 @@ export interface FillResult {
   boundedCheckMs: number;
 }
 
-export type CommandFailureCode = LocalErrorCode | "INVALID_COMMAND" | "TAB_UNAVAILABLE";
+export type CommandFailureCode = LocalErrorCode | "INVALID_COMMAND" | "TAB_UNAVAILABLE" | "COMMAND_TIMEOUT";

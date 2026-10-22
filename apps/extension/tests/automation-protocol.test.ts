@@ -28,6 +28,16 @@ describe("fixed automation command protocol", () => {
     expect(parseAutomationCommand({ ...base, action: "ENUM_POPUP" })).not.toBeNull();
     expect(parseAutomationCommand({ requestId: "request_1", runId: "run_1", action: "ENUM_POPUP" })).toBeNull();
   });
+  it("accepts SWITCH_SECTION_TAB with only an in-range 1..5 sectionIndex", () => {
+    expect(parseAutomationCommand({ ...base, action: "SWITCH_SECTION_TAB" })).not.toBeNull();
+    expect(parseAutomationCommand({ ...base, action: "SWITCH_SECTION_TAB", sectionIndex: 2 })).toMatchObject({ sectionIndex: 2 });
+    expect(parseAutomationCommand({ ...base, action: "SWITCH_SECTION_TAB", sectionIndex: 5 })!.sectionIndex).toBe(5);
+    for (const bad of [0, 6, 1.5, -1, "2"]) {
+      expect(parseAutomationCommand({ ...base, action: "SWITCH_SECTION_TAB", sectionIndex: bad } as never)!.sectionIndex).toBeUndefined();
+    }
+    // 附着在其它动作上的 sectionIndex 必须被丢弃，绝不当作导航许可。
+    expect(parseAutomationCommand({ ...base, action: "PLAY", sectionIndex: 2 })!.sectionIndex).toBeUndefined();
+  });
   it("binds chapter notice resolution to the current task and accepts only a strict skip flag", () => {
     expect(parseAutomationCommand({ action: "CONFIRM_NEXT", requestId: "r", runId: "run" })).toBeNull();
     expect(parseAutomationCommand({ ...base, action: "CONFIRM_NEXT", allowSkipUnfinished: true })).toMatchObject({ allowSkipUnfinished: true });

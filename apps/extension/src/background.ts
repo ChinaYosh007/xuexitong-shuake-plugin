@@ -1,7 +1,8 @@
 import { asPageFailure, isTrustedExtensionPageUrl, parseExtensionCommandRequest } from "./shared/messages";
 import type { PageResponse } from "./shared/messages";
 import { parseAutomationCommand } from "./automation/protocol";
-import type { AutomationResponse } from "./automation/protocol";
+import type { AutomationCommand, AutomationResponse } from "./automation/protocol";
+import { openDiscussionTab } from "./automation/discussion-bridge";
 
 /**
  * MV3 service worker: opens the side panel, performs short-lived script injection and relays the
@@ -117,6 +118,10 @@ async function ensureAutomationEntry(tabId: number): Promise<void> {
   });
 }
 
+async function relayAutomationCommand(tabId: number, command: AutomationCommand): Promise<AutomationResponse> {
+  return await chrome.tabs.sendMessage(tabId, { type: "AUTOMATION_PAGE", command }, { frameId: 0 }) as AutomationResponse;
+}
+
 async function handleAutomationBridge(message: Record<string, unknown>, sender: chrome.runtime.MessageSender): Promise<AutomationResponse> {
   if (sender.id !== chrome.runtime.id || sender.url?.split("?")[0] !== chrome.runtime.getURL("runner.html")) {
     return { ok: false, code: "INVALID_COMMAND", detail: "课程调度指令只接受可信运行页。" };
@@ -126,13 +131,33 @@ async function handleAutomationBridge(message: Record<string, unknown>, sender: 
   if (!command || typeof tabId !== "number" || !Number.isInteger(tabId) || tabId < 1) {
     return { ok: false, code: "INVALID_COMMAND", detail: "无效课程调度指令。" };
   }
-  try {
-    await chrome.tabs.get(tabId);
-    await ensureAutomationEntry(tabId);
-    return await chrome.tabs.sendMessage(tabId, { type: "AUTOMATION_PAGE", command }, { frameId: 0 }) as AutomationResponse;
-  } catch {
-    return { ok: false, code: "TAB_UNAVAILABLE", detail: "课程标签已关闭、正在导航或没有站点权限。请先授予课程站点读取权限。" };
-  }
+  const execute = async (): Promise<AutomationResponse> => {
+    let dispatched = false;
+    try {
+      await chrome.tabs.get(tabId);
+      await ensureAutomationEntry(tabId);
+      dispatched = true;
+      return await relayAutomationCommand(tabId, command);
+    } catch {
+      // A lost response does not prove a click/write failed. Never replay a mutating action.
+      if (dispatched && !["INSPECT", "READ_ONE", "READ_ALL", "CAPTURE"].includes(command.action)) {
+        return { ok: false, code: "TAB_UNAVAILABLE", detail: "页面指令结果未确认；为避免重复点击或写入，未自动重试。请检查课程页面。" };
+      }
+      // Navigation may briefly remove the listener. Injection is idempotent; only read-only
+      // commands, or commands not yet dispatched, may be sent after this single recovery.
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [0] },
+          files: ["page/automation-entry.js"],
+          world: "ISOLATED"
+        });
+        return await relayAutomationCommand(tabId, command);
+      } catch {
+        return { ok: false, code: "TAB_UNAVAILABLE", detail: "课程标签已关闭、正在导航或没有站点权限。请先授予课程站点读取权限。" };
+      }
+    }
+  };
+  return command.action === "OPEN_DISCUSSION" ? openDiscussionTab(tabId, command, execute) : execute();
 }
 
 chrome.runtime.onInstalled.addListener(() => {

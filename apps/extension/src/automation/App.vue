@@ -7,14 +7,15 @@ import { PRIVACY_VERSION } from "@study/contracts";
 import { fetchMe, fetchProviderProfiles, fetchAutomationLimits, generateAnswer, login, describeProblem } from "../api/client";
 import type { AutomationLimits } from "../api/client";
 import { clearSession, loadSession, saveSession } from "../api/session";
-import { loadSettings } from "../api/settings";
+import { loadRunnerPreferences, loadSettings, saveRunnerPreferences } from "../api/settings";
 import { BUILD_BACKEND_ORIGIN } from "../shared/buildConfig";
 import { randomId } from "../shared/ids";
 import { isSitePermissionGranted, readPermissionSite, readTabIdFromSearch, requestSitePermission, sitePermissionOrigin } from "../sidepanel/bridge";
 import { sendAutomationCommand } from "./protocol";
-import type { TaskQuestion } from "./protocol";
+import type { TaskDiagnostics, TaskQuestion } from "./protocol";
 import { CourseRunner, createRunnerState } from "./runner";
 import { WorkPool } from "./work-pool";
+import { DISCUSSION_ORIGIN } from "../shared/pages";
 import type { ManualQuestion } from "./runner";
 import { QuestionImageError } from "./question-image-error";
 import { askLocalProvider, loadActiveProvider } from "../local/provider";
@@ -22,9 +23,18 @@ import type { LocalProvider } from "../local/provider";
 import { copyPng, copyText } from "../sidepanel/clipboard";
 import type { TextCopyResult } from "../sidepanel/clipboard";
 import { questionToMarkdown, questionsToMarkdown } from "../shared/question-markdown";
-import { playAlarm, unlockAlarm } from "../shared/alarm";
+import { ring, setAlarmVolume, stopAlarm, unlockAlarm } from "../shared/alarm";
 
 const tabId = readTabIdFromSearch(location.search);
+let commandTabId = tabId;
+const discussionGranted = ref(false);
+const discussionPermissionNotice = ref("");
+async function grantDiscussionPermission(): Promise<void> {
+  try {
+    discussionGranted.value = await requestSitePermission(DISCUSSION_ORIGIN);
+    discussionPermissionNotice.value = discussionGranted.value ? "已授权讨论页面；回复核验后自动发表。" : "未授予讨论页面权限。";
+  } catch { discussionPermissionNotice.value = "讨论页面授权失败，请重试。"; }
+}
 const state = reactive(createRunnerState());
 const token = ref<string | null>(null);
 const localProvider = ref<LocalProvider | null>(null);
@@ -56,6 +66,12 @@ const preparing = ref(false);
 const limits = ref<AutomationLimits | null>(null);
 const startQuestion = ref(1);
 const alwaysImage = ref(true);
+// 0.2.8 M1：站点允许时把视频定位到末尾触发其自身完成判定；已适配资料滚动到底。均默认开启。
+const allowVideoSeek = ref(true);
+const allowMaterialScroll = ref(true);
+// 拖动可接受性按课程缓存（"allowed"/"denied"），下次同一课程运行前直接套用，省掉重复试探。
+const videoSeekPolicies = reactive<Record<string, "allowed" | "denied" | "unknown">>({});
+let activeCourseKey = "";
 const manualDrafts = reactive<Record<number, { selected: string[]; blanks: Record<string, string>; text: string; multi: boolean; type: string; edited: boolean; context: string }>>({});
 const manualErrors = reactive<Record<number, string>>({});
 const credentials = reactive({ username: "", password: "" });
@@ -70,20 +86,22 @@ const ready = computed(() => tabId !== null && consent.value && !previewLoading.
 // 只刷课模式不调用模型：不需要配置供应商，只需绑定课程标签与一次性运行授权。
 const readyVideosOnly = computed(() => tabId !== null && consent.value && !previewLoading.value);
 const runner = new CourseRunner(state, {
+  async returnToCourse() { commandTabId = tabId; },
   async command(command) {
     if (tabId === null) throw new Error("没有绑定课程标签，请从课程页面打开调度器。");
-    const response = await sendAutomationCommand(tabId, { ...command, requestId: randomId(), runId });
+    const response = await sendAutomationCommand(commandTabId ?? tabId, { ...command, requestId: randomId(), runId });
     if (!response.ok) {
       if (response.questionIssue === "IMAGE_UNREADABLE") throw new QuestionImageError(response.detail, response.captured);
       throw new Error(response.detail);
     }
+    if (command.action === "OPEN_DISCUSSION" && typeof response.discussionTabId === "number") commandTabId = response.discussionTabId;
     return response;
   },
   async readQuestion(index, snapshot) {
     if (tabId === null) throw new Error("没有绑定课程标签。");
     const key = `${snapshot.courseKey}:${snapshot.taskKey}`;
     if (key !== inventoryTask) { inventoryTask = key; inventory.value = []; clearPreviewImages(); }
-    const response = await sendAutomationCommand(tabId, { action: "READ_ONE", index, courseKey: snapshot.courseKey,
+    const response = await sendAutomationCommand(commandTabId ?? tabId, { action: "READ_ONE", index, courseKey: snapshot.courseKey,
       taskKey: snapshot.taskKey, requestId: randomId(), runId });
     if (!response.ok) throw new Error(response.detail);
     if (!response.captured) throw new Error("单题源数据读取响应不完整。");
@@ -143,11 +161,16 @@ async function doLogin(): Promise<void> {
 }
 async function refreshSitePermission(): Promise<void> {
   siteGranted.value = await isSitePermissionGranted(site.value);
+  discussionGranted.value = await isSitePermissionGranted(DISCUSSION_ORIGIN);
   siteChecked.value = true;
 }
 function onPermissionMaybeChanged(): void {
   // Permissions can be granted/revoked from the side panel or Chrome extension details.
-  if (document.visibilityState === "visible") void refreshSitePermission();
+  if (document.visibilityState !== "visible") return;
+  void refreshSitePermission();
+  // P2/P3: returning to a run page that was backgrounded — compensate one throttled submission
+  // wait (re-check the dialog + refresh state) without ever re-clicking submit.
+  void runner.onForeground();
 }
 async function grantSite(): Promise<void> {
   try {
@@ -168,6 +191,7 @@ async function start(continueTasks = true, skipVideos = false, videosOnly = fals
   error.value = "";
   preparing.value = true;
   try {
+    commandTabId = tabId;
     let concurrency = 2;
     let perMinute = 0;
     if (!videosOnly) {
@@ -187,17 +211,33 @@ async function start(continueTasks = true, skipVideos = false, videosOnly = fals
       perMinute = limits.value.requestsPerMinute > 0 ? Math.min(10000, limits.value.requestsPerMinute) : 0;
     }
     preparing.value = false;
+    // 拖动策略按课程缓存：运行前尽力读取当前课程标识，套用上次学到的可拖性，避免重复试探。
+    activeCourseKey = "";
+    let initialSeekPolicy: "allowed" | "denied" | "unknown" = "unknown";
+    if (allowVideoSeek.value && tabId !== null) {
+      try {
+        const status = await sendAutomationCommand(commandTabId ?? tabId, { action: "INSPECT", requestId: randomId(), runId });
+        if (status.ok && status.snapshot) {
+          activeCourseKey = status.snapshot.courseKey;
+          initialSeekPolicy = videoSeekPolicies[activeCourseKey] ?? "unknown";
+        }
+      } catch { /* 读取失败按 unknown 试探 */ }
+    }
     await runner.start({ startQuestion: startQuestion.value, requestConcurrency: concurrency,
-      requestsPerMinute: perMinute, continueTasks, sendImages: alwaysImage.value ? "always" : "auto", skipVideos, videosOnly });
+      requestsPerMinute: perMinute, continueTasks, sendImages: alwaysImage.value ? "always" : "auto", skipVideos, videosOnly,
+      allowVideoSeek: allowVideoSeek.value, videoSeekPolicy: initialSeekPolicy, allowMaterialScroll: allowMaterialScroll.value });
   } catch (e) { error.value = e instanceof Error ? e.message : "启动失败。"; }
   finally { preparing.value = false; }
 }
 
 /** 声音提醒：出错时强提醒并每 30 秒重复（使用者可能在看别的窗口）；待人工补答提示一次。 */
 const soundEnabled = ref(true);
+const alarmVolume = ref(0.7);
+setAlarmVolume(alarmVolume.value);
 let alarmTimer: ReturnType<typeof setInterval> | null = null;
 function stopAlarmRepeat(): void {
   if (alarmTimer !== null) { clearInterval(alarmTimer); alarmTimer = null; }
+  stopAlarm();
 }
 function startAlarmRepeat(): void {
   stopAlarmRepeat();
@@ -205,30 +245,55 @@ function startAlarmRepeat(): void {
   alarmTimer = setInterval(() => {
     if (!soundEnabled.value || state.phase !== "ERROR" || repeats >= 20) { stopAlarmRepeat(); return; }
     repeats += 1;
-    playAlarm(2);
+    ring("error", 2);
   }, 30000);
 }
 watch(() => state.phase, (phase, previous) => {
   if (phase === previous) return;
   if (phase === "ERROR") {
-    // 运行出错需要人工处理（含视频弹题枚举失败）：响铃并重复，直到用户回来处理或静音。
-    if (soundEnabled.value) { playAlarm(3); startAlarmRepeat(); }
+    // 运行出错需要人工处理（含视频弹题枚举失败）：播放自定义/内置告警音并重复，直到用户回来处理或静音。
+    if (soundEnabled.value) { ring("error", 3); startAlarmRepeat(); }
   } else if (phase === "NEEDS_INPUT" && soundEnabled.value) {
-    playAlarm(1);
+    ring("needsInput", 1);
   }
   if (phase !== "ERROR") stopAlarmRepeat();
 });
 watch(soundEnabled, enabled => { if (!enabled) stopAlarmRepeat(); });
 function onUserAttention(): void { stopAlarmRepeat(); }
+/** 运行偏好（0.2.8 M1）：拖动/滚动开关、声音开关与音量、按课程缓存的可拖性；存储封装在 api/settings。 */
+async function loadRunnerPrefs(): Promise<void> {
+  try {
+    const prefs = await loadRunnerPreferences();
+    allowVideoSeek.value = prefs.allowVideoSeek;
+    allowMaterialScroll.value = prefs.allowMaterialScroll;
+    soundEnabled.value = prefs.soundEnabled;
+    alarmVolume.value = prefs.alarmVolume;
+    for (const key of Object.keys(videoSeekPolicies)) delete videoSeekPolicies[key];
+    Object.assign(videoSeekPolicies, prefs.videoSeekPolicies);
+  } catch { /* 存储不可用则保持默认值 */ }
+}
+async function saveRunnerPrefs(): Promise<void> {
+  try {
+    await saveRunnerPreferences({ allowVideoSeek: allowVideoSeek.value, allowMaterialScroll: allowMaterialScroll.value,
+      soundEnabled: soundEnabled.value, alarmVolume: alarmVolume.value, videoSeekPolicies: { ...videoSeekPolicies } });
+  } catch { /* 忽略持久化失败：本机偏好不影响本次运行 */ }
+}
+watch([allowVideoSeek, allowMaterialScroll, soundEnabled, alarmVolume], () => { void saveRunnerPrefs(); });
+watch(alarmVolume, value => setAlarmVolume(Math.min(1, Math.max(0, value))));
+watch(() => state.videoSeekPolicy, policy => {
+  if (activeCourseKey && (policy === "allowed" || policy === "denied") && videoSeekPolicies[activeCourseKey] !== policy) {
+    videoSeekPolicies[activeCourseKey] = policy; void saveRunnerPrefs();
+  }
+});
 async function previewCurrentQuestion(): Promise<void> {
   if (tabId === null || previewLoading.value) return;
   previewLoading.value = true;
   error.value = "";
   try {
-    const status = await sendAutomationCommand(tabId, { action: "INSPECT", requestId: randomId(), runId });
+    const status = await sendAutomationCommand(commandTabId ?? tabId, { action: "INSPECT", requestId: randomId(), runId });
     if (!status.ok) throw new Error(status.detail);
     if (!status.snapshot || status.snapshot.kind !== "QUIZ") return;
-    const result = await sendAutomationCommand(tabId, { action: "READ_ALL", requestId: randomId(), runId,
+    const result = await sendAutomationCommand(commandTabId ?? tabId, { action: "READ_ALL", requestId: randomId(), runId,
       courseKey: status.snapshot.courseKey, taskKey: status.snapshot.taskKey });
     if (!result.ok) throw new Error(result.detail);
     if (!result.questions) throw new Error("整份题目读取响应不完整。");
@@ -260,10 +325,10 @@ async function previewFallback(item: TaskQuestion): Promise<void> {
   previewBusy[index] = true; previewErrors[index] = "";
   try {
     await previewPool.run(async () => {
-      const status = await sendAutomationCommand(tabId, { action: "INSPECT", requestId: randomId(), runId });
+      const status = await sendAutomationCommand(commandTabId ?? tabId, { action: "INSPECT", requestId: randomId(), runId });
       if (!status.ok || !status.snapshot) throw new Error("课程状态不可用。");
       if (`${status.snapshot.courseKey}:${status.snapshot.taskKey}` !== expectedTask) throw new Error("课程已切换任务，请查看新任务的题目。");
-      const result = await sendAutomationCommand(tabId, { action: "CAPTURE", forceImage: true, imagePass: "whole", requestId: randomId(), runId,
+      const result = await sendAutomationCommand(commandTabId ?? tabId, { action: "CAPTURE", forceImage: true, imagePass: "whole", requestId: randomId(), runId,
         courseKey: status.snapshot.courseKey, taskKey: status.snapshot.taskKey, index });
       if (!result.ok) throw new Error(result.detail);
       if (inventoryTask !== expectedTask || result.captured?.fingerprint !== item.fingerprint) throw new Error("题目已变化，请重新读取。");
@@ -374,6 +439,40 @@ async function submitNow(): Promise<void> {
   try { await runner.submitNow(); }
   catch (e) { error.value = e instanceof Error ? e.message : "提交失败。"; }
 }
+/** P3: re-observe a submission already clicked, without ever clicking submit again. */
+async function recheckSubmission(): Promise<void> {
+  error.value = "";
+  try { await runner.recheckSubmission(); }
+  catch (e) { error.value = e instanceof Error ? e.message : "复核提交结果失败。"; }
+}
+/**
+ * D2/D3 (0.2.8): one safe line for a failing machine to paste back. It carries ONLY structure
+ * counters and short enum values plus the runner's own phase/completion tallies — never question
+ * text, answers, URLs, HTML or a course identifier (privacy.md). The page-side TaskDiagnostics is
+ * already redacted; this only formats it.
+ */
+function formatDiagnostics(d: TaskDiagnostics | undefined): string {
+  if (!d) return "diagnostics: (尚未取得，运行或预览一次后重试)";
+  return "diagnostics: " + [
+    `docs=${d.documents}`, `iframes=${d.iframes}`, `cards=${d.cardsFrames}`, `num=${d.cardNumPresent ? 1 : 0}`,
+    `mods=${d.modules}`, `kind=${d.moduleKind}`, `active=${d.activeModule}`, `anom=${d.anomalies}`,
+    `mark=${d.markerCompleted}/${d.markerTotal}`, `unread=${d.markerUnreadable}`,
+    `videos=${d.videoCount}`, `rs=${d.videoReadyState}`, `seek=${d.videoSeekable}`,
+    `t=${d.currentTime}`, `dur=${d.duration}`, `ended=${d.ended ? 1 : 0}`, `paused=${d.paused ? 1 : 0}`,
+    `pdf=${d.pdfReady ? 1 : 0}`, `scroll=${d.scrollableCandidates}`, `submit=${d.submitCandidates}`
+  ].join(" ");
+}
+function diagnosticsLine(): string {
+  return [
+    `phase=${state.phase}`, `tasks=${state.completedTasks}`, `skipV=${state.skippedVideos}`,
+    `skipQ=${state.skippedQuizzes}`, `skipR=${state.skippedResources}`,
+    formatDiagnostics(state.diagnostics)
+  ].join(" ");
+}
+async function copyDiagnostics(): Promise<void> {
+  const line = diagnosticsLine();
+  await presentCopyResult(await copyText(line), line);
+}
 const imageNotice = ref("");
 const copyNotice = ref("");
 const copyFallback = ref("");
@@ -462,6 +561,8 @@ onMounted(async () => {
   window.addEventListener("keydown", onUserAttention);
   try {
     origin.value = (await loadSettings()).backendOrigin;
+    discussionGranted.value = await isSitePermissionGranted(DISCUSSION_ORIGIN);
+    await loadRunnerPrefs();
     const local = await loadActiveProvider();
     if (local) {
       localProvider.value = local;
@@ -543,10 +644,18 @@ onBeforeUnmount(() => {
       <p class="hint">默认第 1 题，后续任务自动从第 1 题开始。起始题之前保留并核验已有答案，不重复调用模型；缺答自动作答，最终失败才汇总。自动决定单次或不确定时三次复核，无需逐题选择。</p>
       <p v-if="limits" class="hint" data-testid="runner-limits">并行请求 {{ limits.perUserConcurrency > 0 ? Math.min(2, limits.perUserConcurrency) : 2 }} 个 · {{ limits.requestsPerMinute > 0 ? "每分钟最多 " + limits.requestsPerMinute + " 次" : "不限每分钟次数" }} · {{ limits.requestsPerDay > 0 ? "每日最多 " + limits.requestsPerDay + " 次" : "不限每日次数" }}（个人 Key 自担费用）</p>
       <label><input v-model="consent" type="checkbox" :disabled="running" data-testid="runner-consent" />
-        <template v-if="taskMode === 'videos'">允许本次运行自动播放视频、打开已适配的 PPT/PDF 资料、跳过题目并继续寻找下一非题目任务；未确认完成的资料只计越过，视频弹题仅在页面内处理。</template>
-        <template v-else>允许本次运行自动播放视频、回填并提交已适配章节任务及进入下一任务；题目图像仅在需要模型作答时发送到默认供应商，视频弹题只枚举页面选项、不发送任何内容。</template></label>
+        <template v-if="taskMode === 'videos'">允许本次运行自动播放视频、打开已适配资料、提交已有完整答案并确认、发表已有讨论草稿；答案不完整则跳过并继续，不调用模型，视频弹题仅在页面内处理。</template>
+        <template v-else>允许本次运行自动播放视频、回填并提交已适配章节任务、发表讨论回复及进入下一任务；题目图像仅在需要模型作答时发送到默认供应商，视频弹题只枚举页面选项、不发送任何内容。</template></label>
       <label class="hint"><input v-model="soundEnabled" type="checkbox" :disabled="running" data-testid="runner-sound" />
         声音提醒（运行出错、需要人工补答或弹题作答失败时响铃；出错每 30 秒重复，直到回到本页处理。人在别的窗口也能听到）</label>
+      <p class="hint">各模式均自动提交完整答案并确认；讨论回复核验后自动发表。只刷课模式仅提交已有完整答案或讨论草稿，不生成缺失答案。{{ discussionPermissionNotice }}</p>
+      <label v-if="soundEnabled" class="hint" data-testid="runner-alarm-volume-label">告警音量
+        <input v-model.number="alarmVolume" type="range" min="0" max="1" step="0.05" :disabled="running" data-testid="runner-alarm-volume" />
+        <span>{{ Math.round(alarmVolume * 100) }}%</span>（对本机打包的提示音与回退蜂鸣同时生效，仅调扩展自身音量）</label>
+      <label v-if="taskMode !== 'questions'" class="hint"><input v-model="allowVideoSeek" type="checkbox" :disabled="running" data-testid="runner-allow-seek" />
+        站点允许时把视频定位到末尾以触发其自身完成判定（只写标准播放位置，不伪造进度；站点禁止或进度回退时自动改回完整播放，任务是否完成仍以站点变绿为唯一依据。可拖性按课程记忆，下次不再重复试探）</label>
+      <label v-if="taskMode !== 'questions'" class="hint"><input v-model="allowMaterialScroll" type="checkbox" :disabled="running" data-testid="runner-allow-scroll" />
+        已适配的 PPT/PDF 资料打开后滚动到底，促使站点自行确认完成（仅结构滚动，绝不伪造阅读时长或完成状态）</label>
       <div class="row">
         <label class="task-mode">任务模式
           <select v-model="taskMode" :disabled="running" data-testid="runner-mode">
@@ -556,11 +665,15 @@ onBeforeUnmount(() => {
           </select>
         </label>
         <button class="primary" data-testid="runner-start" :disabled="running || (taskMode === 'videos' ? !readyVideosOnly : !ready)" @click="startSelectedMode">开始运行</button>
+        <button :disabled="running || discussionGranted" data-testid="runner-discussion-permission" @click="grantDiscussionPermission">{{ discussionGranted ? "讨论页面已授权" : "授权讨论页面" }}</button>
         <button data-testid="runner-pause" :disabled="state.phase !== 'RUNNING'" @click="runner.pause()">暂停</button>
         <button data-testid="runner-resume" :disabled="state.phase !== 'PAUSED' && state.phase !== 'NEEDS_INPUT'" @click="runner.resume()">继续</button>
         <button data-testid="runner-stop" :disabled="!running" @click="runner.stop()">停止</button>
         <button data-testid="runner-submit-now" :disabled="state.manualSaving || !(state.phase === 'NEEDS_INPUT' || state.phase === 'ERROR' || state.phase === 'DONE')" @click="submitNow">立即提交当前任务（点站点 Submit）</button>
+        <button data-testid="runner-recheck" :disabled="state.busy || state.manualSaving || !(state.phase === 'NEEDS_INPUT' || state.phase === 'ERROR' || state.phase === 'DONE')" @click="recheckSubmission">重新检查提交结果（不再点提交）</button>
+        <button data-testid="runner-copy-diagnostics" @click="copyDiagnostics">复制诊断行</button>
       </div>
+      <p class="hint" data-testid="runner-diagnostics-hint">「重新检查提交结果」只复核站点当前状态，绝不重复点击提交；「复制诊断行」只含页面结构计数，不含题文、答案、网址或课程标识，可安全粘贴反馈。</p>
       <p class="hint">暂停／停止会阻止后续动作；已发出的模型请求或提交无法撤回。题目图像和答案仅在内存中处理，不记录到运行日志。</p>
       <p class="hint" data-testid="runner-autoplay-hint">刷课模式遇到浏览器拦截有声自动播放时，会先在课程页静音开始播放，播放后再恢复声音；仍失败才提示人工处理。</p>
       <p class="hint" data-testid="runner-popup-hint">视频播放途中出现的强制弹题会自动按顺序枚举页面选项作答（不调模型、不上报人工）；枚举全部选项仍未通过时停止并响铃，请回课程页人工处理。</p>
@@ -568,10 +681,11 @@ onBeforeUnmount(() => {
     <section class="card" data-testid="runner-state">
       <h2>{{ state.phase }} · {{ state.step }}</h2>
       <p>本轮已收集 {{ state.collected }} 题 · 当前任务共 {{ state.questionCount }} 题 · 最近处理第 {{ state.question }} 题 · 已确认完成 {{ state.completedTasks }} 个任务</p>
+      <p v-if="state.publishedDiscussions" data-testid="runner-published-discussions">已核验发表 {{ state.publishedDiscussions }} 条讨论回复（课程任务点以站点标记为准）</p>
       <p v-if="state.videoStatus" data-testid="runner-video-status">视频任务：{{ state.videoStatus }}</p>
       <p v-if="state.skippedResources" data-testid="runner-skipped-resources">已越过 {{ state.skippedResources }} 个已识别的资料/图文卡片（不计入已完成任务）</p>
       <p v-if="state.skippedVideos" data-testid="runner-skipped-videos">刷题模式已跳过 {{ state.skippedVideos }} 个未完成的视频任务点（不计入已完成任务；后续可回到刷课模式补看）</p>
-      <p v-if="state.skippedQuizzes" data-testid="runner-skipped-quizzes">只刷课模式已跳过 {{ state.skippedQuizzes }} 个题目任务点（不读取、不调用模型、不提交，不计入已完成任务）</p>
+      <p v-if="state.skippedQuizzes" data-testid="runner-skipped-quizzes">只刷课模式已跳过 {{ state.skippedQuizzes }} 个答案不完整的题目任务点（不调用模型、不提交，不计入已完成任务）</p>
       <p class="counters" data-testid="runner-pipeline">
         <span class="counter"><span class="counter-num">{{ state.collected }}</span>已收集</span>
         <span class="counter"><span class="counter-num">{{ state.filled }}</span>自动回填/补答</span>
@@ -583,6 +697,7 @@ onBeforeUnmount(() => {
       </p>
       <p data-testid="runner-monitor">监听检查 {{ state.monitorChecks }} 次{{ state.lastCheck ? ` · 最近 ${new Date(state.lastCheck).toLocaleTimeString()}` : "" }}</p>
       <p v-if="state.error" class="error" data-testid="runner-error">{{ state.error }}</p>
+      <p v-if="state.diagnostics" class="hint" data-testid="runner-diagnostics-line">{{ diagnosticsLine() }}</p>
       <p v-if="error" class="error">{{ error }}</p>
     </section>
     <details v-if="state.imageReplies.length" class="card" data-testid="runner-image-replies" open>

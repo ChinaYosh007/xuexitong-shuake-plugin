@@ -1243,3 +1243,111 @@ User clarified that an ended Java video must automatically continue through subs
 Verified: 454 unit tests, typecheck/build, 8 release-script tests, 11 contract tests and contract inventory checks; final 5 MV3 browser regressions passed (52.8s), including two mixed-card real-media fixtures with first video initially unfinished/completed, one skipped quiz/resource each, zero submissions/model calls and exactly one chapter Next/confirmation. ZIP 0.2.7 has 16 entries; CRC and per-file equality with dist passed. git diff --check passed.
 
 Unverified / 未验证：新版0.2.7尚未在用户真实课程重载后执行；任意其他PPT查看器和真实强制弹题仍无证据。本地构建未推送或公开发布。证据、行为与安装方式见 docs/course-playback-0.2.7.md、compatibility6.9。
+
+### 9.39 Diagnostics and submission self-healing / 脱敏诊断与提交自愈（2026-10-21，0.2.8 M0）
+
+0.2.8 remediation M0 is a low-risk first batch that changes **no security boundary and adds no video seek or material scroll** — it only makes the existing submit/navigation chain observable and self-recovering so the failing machine's redacted state can be captured. Scope (see docs/optimization-plan-0.2.8.md §11 M0): D1 redacted `TaskSnapshot.diagnostics` (structure counts and short enums only — documents/iframes/cards+num, modules/kind/active/anomalies, marker completed/total/unreadable, video readyState/seekable/currentTime/duration/ended/paused, pdf ready, scrollable & submit candidates), populated at both `inspect()` return sites (standalone and course-task); D2 a 「复制诊断行」 button emitting a one-line safe status string; D3 a diagnostics line shown beside the error under the state card; P1 a unified `awaitSubmission()` with confirmed/advanced/unconfirmed branches, tolerating up to 3 consecutive `INSPECT` failures during post-submit navigation, dual budget = active 180s + wall 15min, never re-clicking `SEND_WORK`; P2 a throttle-aware active clock (`delay()` credits only `min(actual, requested×1.5)`) plus `onForeground()` visibility compensation; P3 `recheckSubmission()` that re-reads site green state without re-submitting, wired to a 「重新检查提交结果（不再点提交）」 button enabled in NEEDS_INPUT/ERROR/DONE; P8 a structured 30s command timeout (`COMMAND_TIMEOUT`, returned not thrown); N4 bounded 25s load-grace waits for un-loaded VIDEO/RESOURCE; N5 a single retry-once re-injection in `background.ts` before declaring `TAB_UNAVAILABLE`.
+
+Verified（本机，本轮）：`npm run typecheck` 通过；`npm test` **454 项全部通过、无回归**——现有 QUIZ/独立作业提交类用例经此路径真实执行（runLoop 与 runStandaloneWork 的提交等待已改走 `awaitSubmission`），「答案并提交一次后停止」「站点离开作业页才计数」「提交前跳转则如实报告未核验」等断言仍成立。诊断字段确为计数/枚举，`TaskDiagnostics` 类型定义不含任何题文、答案、URL、HTML 或课程标识字段。声音文件 `sounds/error.mp3` 与 `README.md` 已就位并由 `build-extension.mjs copySoundAssets()` 拷贝进 `dist/sounds/`（上一会话接入，本批仅确认打包）。AGENTS.md、privacy.md、使用说明.md 已同步本轮授权与 UX 说明。
+
+Unverified / 未验证：`recheckSubmission()`、`onForeground()` 与诊断行格式化**没有专门的新单元测试**（仅由全量套件保证不破坏既有行为）；本轮**未重跑 MV3 真实浏览器 e2e**，活跃时间预算耗尽、INSPECT 连续失败容忍、后台节流补偿等分支只由合成端口的同步 sleep 间接覆盖，未针对节流场景断言；真站「提交不重复 / 变绿才计数 / 复核不误提交 / 诊断行可安全粘贴」**尚未在用户失败机器上取证**。本批为 0.2.8-alpha，未执行 `version:extension`、未打包发布、未推送或公开。视频定位到末尾（§3）与资料滚动到底（§4）属 M1，本批未实现。
+
+### 9.40 Video seek-to-tail & material scroll / 视频定位末尾与资料滚动到底（2026-10-21，0.2.8 M1）
+
+M1 主整改落地用户已授权的两项（plan §3/§4），**不改动任何安全边界、不新增学习通专有选择器**（硬约束 §11），只用标准媒体与 DOM 原语，完成证据仍是站点任务点变绿。范围：
+
+- §3 视频定位末尾：`course-page` 新增 `SEEK_TAIL`（只读 `duration/readyState/seekable.end()`，写 `video.currentTime = min(duration,seekable末) − 2s`，不可定位/未就绪返回 `applied:false`）与 `PLAY_FROM_START`（`currentTime=0` 后走既有 `startVideo`）。`runner` 抽出 `playVideoToCompletion()`（0.2.7 完整播放监控循环，逐字迁移含弹题枚举/无进展超时/暂停恢复），新增 `trySeekVideoCompletion()`：`videoSeekPolicy` 为 `denied` 或（`unknown` 且未就绪/中段）直接回退完整播放；仅在播放位置≤10s 时试探，拖动成功末尾播放后 20s 观察窗口内站点变绿记 `allowed`、进度回退>3s 或超窗记 `denied` 并回退。runLoop 视频分支按 `allowVideoSeek` 分派 seek→(completed/advanced/fallback→完整播放)。
+- §4 资料滚动到底：`SCROLL_MATERIAL` 用 `findScrollContainer()`（`scrollingElement` 优先，否则 `overflow-y:auto/scroll` 最大者）与 5 步 ~350ms `scrollTo`，runLoop 资源等待循环在 `allowMaterialScroll` 且打开后约 5s 仍未确认时**滚动一次**，滚动不伪造阅读时长、完成仍靠站点绿标。
+- §7 E4/E5：运行页「告警音量」滑块驱动 `setAlarmVolume`；`allowVideoSeek`/`allowMaterialScroll`/`soundEnabled`/音量与按课程缓存的 `videoSeekPolicies` 经 `api/settings.ts`（可信存储模块，App.vue 不直接碰 `chrome.storage`）持久化到本机，仅存布尔/0–1 数值/`allowed|denied` 枚举，不含令牌或题文。
+
+关键约束：`RunOptions` 里 `allowVideoSeek`/`allowMaterialScroll` 的**代码默认值为 `false`**，故全量测试与 0.2.7 行为逐字不变；运行页复选框**默认勾选**，作为用户对每次运行的显式授权传入 `true`。可拖性/滚动关闭时走原完整播放与 60s 资源等待，不受影响。
+
+Verified（本机，本轮）：`npm run typecheck` 通过；`npm test` **464 项全部通过、无回归**（27 文件）。新增单元测试：`automation-runner.test.ts` +3（站点允许拖动→仅凭站点绿标推进、站点回退→`PLAY_FROM_START` 完整播放、资料单次滚动后站点确认完成），`automation-course-page.test.ts` 覆盖 `SEEK_TAIL`/`PLAY_FROM_START`/`SCROLL_MATERIAL`（applied 写末尾、`seekable.length:0` 拒绝、短片段拒绝、非视频任务拒绝、无容器不滚、5 步节奏到 `scrollTop≈800`、视频任务拒绝滚动）。`npm run build` 通过，`dist/sounds/error.mp3`（272 KB）随 `copySoundAssets()` 打包。安全静态扫描 464 项含 storage/token 边界仍通过——`chrome.storage` 直访仍限于 `api/session.ts/api/settings.ts/local/provider.ts/updates/updates.ts`，App.vue 无直接存储调用。
+
+Unverified / 未验证：**真站是否允许视频拖动、拖动到末尾后站点是否自行置完成、PPT/PDF 滚动是否触发站点完成判定均未在用户失败机器上取证**——以上仅有合成端口的 `SEEK_TAIL`/`SCROLL_MATERIAL`/`PLAY_FROM_START` 桩数据覆盖，未断言真实 `seekable` 拒绝或真实进度回退时序；`trySeekVideoCompletion` 的观察窗口时序、按课程可拖性缓存的跨运行读写仅在单元测试层面验证，未在浏览器级 e2e 复现；声音偏好与按课程缓存的真实持久化（`chrome.storage.local`）未在打包后的 Chrome 中重载验证。本批仍为 0.2.8-alpha，未 `version:extension`、未打包发布、未推送或公开。
+
+### 9.41 Horizontal chapter tab navigation / 章节横向标签导航（2026-10-21，0.2.8 M1）
+
+用户 2026-10-21 截图指出章节顶部有横向标签（1 学习内容 / 2 讨论 / 3 教学课件 / 4 教学视频 / 5 评估测试），希望「这种横向的」能被处理、讨论题走题目管线「能填就填」。本批实现**同源横向标签导航**动作 `SWITCH_SECTION_TAB`，并如实标注跨源讨论回帖缺口。
+
+Verified（本机，本轮）：`SWITCH_SECTION_TAB` 已在 `protocol.ts` + `CoursePage.handle` 落地，并受严格解析约束——仅 `action==="SWITCH_SECTION_TAB"` 且 `sectionIndex` 为整数 1..5 才透传，越界(0/6)、非整数、以及附着在其它动作上的 `sectionIndex` 一律丢弃。适配器 `switchSectionTab` 点击站点自身 `li#dct{tab}`（触发其 inline `changeDisplayContent`），再轮询（≤30×~200ms）等待 `active` 类落到该页**且**内容 `#iframe` 卡片 `num==tab−1`，两者同时成立才 `confirmed:true`；站点未移动时返回 `confirmed:false`，运行器据此停止、不假定分区可达；独立作业页（`snapshot.standalone`）拒绝并缺 `sectionIndex` 时失败。切换后清空在途流水线（`applied/sendAttempted/confirmAttempted/priorCardKey/priorTaskKey`），真正任务内容以之后 `INSPECT` 为准，完成证据仍只有站点任务点变绿。`npm run typecheck` 通过；`npm test` **469 项全部通过、无回归**（27 文件），新增 5 项单元测试：讨论页签切换确认（`activeIndex:1/loadedNum:1/activeLabel:"讨论"`）、缺序号失败、站点未移动 `confirmed:false`（假定时器耗尽轮询）、工作页拒绝、解析器范围校验（含其它动作携带被丢弃）。安全静态扫描 33 项仍通过，本批未新增任何 `chrome.storage` 直访。
+
+Unverified / 未验证：**真站标签切换是否如合成 fixture 那样移动 `active`/改写卡片 `num`、以及运行器 `runLoop` 是否会自动遍历各分区并据此推进，本批均未接入、未取证**——今日仅对真实课程页做了只读结构取证（`ul.prev_ul li#dct1..5`、`changeDisplayContent`→`#iframe` cards `num=(tab−1)`），未执行带副作用的真站端到端切换。**跨源讨论自动回帖完全未实现**：讨论主题的回帖页在 `groupweb.chaoxing.com/…/replysList`（独立标签、独立源；上一会话取证 `.topicDetail_replyTitle`/`.replyEdit textarea`/`div.replyBtn`/`.topicDetail_replyList`），需要①真站重取一份完整 replysList 脱敏证据（本批目标章节无讨论主题、回帖标签已关闭，取证不足）、②新增 `https://groupweb.chaoxing.com/*` 可选 host 权限、③给单一 tabId 的运行器加跨标签命令路由，三者齐备前不落地、不发布，且按硬约束 §11 绝不凭记忆编造选择器。本批仍为 0.2.8-alpha，未 `version:extension`、未打包发布、未推送或公开。
+
+### 9.42 Post-submit advance dwell / 提交后停留再切换（2026-10-21，0.2.8 M1）
+
+用户 2026-10-21 反馈「每次写题本该自动提交，现在没有了」，并要求「提交时会自动切换，我想先等 2 秒再换，可能要重做并进行相关操作；希望自动提交」。本批处理：
+
+Verified（本机，本轮）：①**自动提交路径在代码里完好**——章节 QUIZ 会先 `solveQuiz` 回填全部题，再恰好一次 `SEND_WORK` + `awaitSubmission`。「看起来没提交」的真实原因是 `solveQuiz` 里**故意的 `NEEDS_INPUT` 门**：只要有任一题回填/回读核验不过（`manualItems` 非空），`checkpoint()` 会把运行停在 `NEEDS_INPUT` 而**不点提交**，以遵守「绝不提交缺题」的硬约束；学习者补完后 `checkpoint()` 恢复、随即提交——是**等待后提交**，不是放弃提交。②落地用户要的 **2 秒停留**：新增静态 `CourseRunner.SUBMIT_ADVANCE_DWELL_MS = 2000`；`runLoop` 仅当章节题提交结果为 `"confirmed"`（站点确认但仍停在当前任务）时置 `submitDwell=true`，在点 `NEXT` 前显示「已提交并确认，停留 2 秒后进入下一任务（可复核或重做）」并 `await this.delay(2000)`（可中断，停止即返回）。站点自行跳转（`"advanced"`）不插入等待（那是站点自己的导航，无法拦停）；独立作业页无任务链、不涉及。`npm run typecheck`、`npm test`（**470 项通过、27 文件**；新增 1 项运行器单测：断言恰好一次 `SEND_WORK` 后点 `NEXT`，且合成时钟在两者间前进 ≥ 2000ms）、`npm run build` 全绿，无回归、未改安全边界。
+
+Unverified / 未验证：打包后真站 Chrome 中 2 秒停留的实际观察未取证；用户这次究竟停在 `NEEDS_INPUT`（缺题）还是别的原因，待其运行页状态确认。是否要「即使有未确定题也强制提交」属越过硬约束的计分动作，未擅自实现，需用户明确单独授权。
+
+### 9.43 Navigation audit and discussion drafts / 导航检查与讨论草稿（2026-10-21）
+
+NEXT now traverses same-card modules, subsequent horizontal tabs, then the chapter Next. Module identity survives sibling reorder; malformed siblings remain UNKNOWN and blocking. Navigation verifies the loaded main card document and tolerates bounded transient INSPECT failures. Dispatched mutations are never automatically replayed after a lost response.
+
+现按同卡片模块→后续横向页签→章节 Next 遍历；模块重排保持身份，异常模块保留为 UNKNOWN 并阻塞。切换核实主卡片文档，允许有界的瞬时读取失败；已发送的写入/提交/跳转结果不明时不重发。
+
+Discussion entry, course/class binding, exact optional host permission and unique new-tab attribution were inspected against the real site. The new adapter reads the original topic and fills a verified plain-text draft in the new page. It preserves existing drafts and stops for manual review, never publishes or counts a discussion complete. Synthetic browser tests use the built MV3 extension and a test-only required-host manifest to avoid interactive permission prompts; production permissions remain optional.
+
+真站已取证讨论入口、原帖与输入框；新增准确可选域权限、课程班级绑定和唯一新标签核验，填入纯文本草稿并回读。已有草稿保留，填好后等待人工检查，不发表、不计完成。合成浏览器测试加载真实构建产物，仅测试副本预授予两个准确站点域，生产权限仍为可选。
+
+| Executed check / 实际执行 | Result / 结果 |
+| --- | --- |
+| `npm test` | 495 passed / 30 files |
+| `npm run test:e2e` | 37 passed / 3.2 min; horizontal traversal and cross-origin discussion draft included |
+| `npm run test:fixtures` | 22 passed |
+| `npm run test:release` | 8 passed |
+| `npm run test:contracts:unit` | 11 passed |
+| `npm run verify:contracts` | PASS: 21 endpoints, 25 error codes, 28 interfaces, 92 properties |
+| `npm run typecheck` / `npm run build` | Passed / 通过 |
+| `python scripts/package-extension.py` | Local v0.2.7 ZIP: 17 entries, CRC and built-file byte equality passed |
+| `git diff --check` | Passed / 通过 |
+
+Verified on the real site: browser UI tools filled one discussion draft and left it unpublished. This was not execution by the rebuilt extension. Unverified: the new extension completing an entire real course, real model quality, other editor skins and popup blocking. No commit, push, version bump or public release was performed. See `project-audit-2026-10-21.md` and compatibility §6.12.
+
+真站仅由浏览器工具填入一条未发表草稿，不是新版扩展实跑。新版扩展真实整课、真实模型质量、其它编辑器皮肤和弹窗拦截仍未验证。本轮未提交、推送、升版本或公开发布；本地包仍标 v0.2.7。详见检查报告及兼容性 §6.12。
+
+### 9.44 Open the discussion destination directly / 讨论入口未自动打开的后续修复（2026-10-21）
+
+The user reported the actual error “未找到此课程新打开的讨论页面”. The earlier implementation clicked the page entry and searched for a popup; it did not establish that a usable popup was created. Real DOM inspection confirmed the exact entry's `data` attribute contains the discussion destination. OPEN_DISCUSSION now returns that validated URL without triggering the page click. The background validates host/path/course/class, creates one blank tab, navigates that exact ID to the site's URL and verifies it after loading. The initial complete about:blank state is ignored. It never searches for or adopts unrelated tabs. No extra permission or dependency was added; no publish action was added.
+
+用户真站报错为「未找到此课程新打开的讨论页面」。旧实现点击后查找弹窗，不能证实当次是拦截还是来源归属丢失。重新取证确认入口 `data` 属性含目标地址，现改为读取并核验地址，由后台建立单一标签后导航该 ID，加载后再次核验课程班级；忽略最初空白页的 complete 状态，不接管其它标签。无新增权限或依赖，仍只填草稿。
+
+Verified: `npm test` passed 500 tests; after the final create-then-navigate adjustment, the 11 bridge unit tests passed again. `npm run typecheck` and `npm run build` passed. The built-extension discussion test passed with a throwing page popup handler, a nonempty draft and zero publication; final navigation browser regression results are recorded below. The test harness now denies DNS resolution for course hosts so a missed synthetic route cannot reach the real course site. No real account is used in these tests.
+
+已验证：全量 500 项单测通过；最终建立标签再导航调整后，11 项桥接单测再次通过。类型检查与构建通过。构建后讨论测试在网页弹窗函数直接抛错时仍打开新页、填入非空草稿、发表次数为零；最终导航浏览器结果见下方。测试环境加入课程域 DNS 拒绝规则，防止漏拦截的合成请求访问真站，测试不使用真实账号。
+
+Unverified: automatic execution of this final build in the user's real browser. The browser tool cannot observe extension pages under its URL policy, so extension reload and starting a fresh runner remain user actions. No public release, push or version bump; the refreshed local package still displays v0.2.7.
+
+未验证：最终补丁在用户真实浏览器中的自动执行。浏览器工具的 URL 安全策略不允许操作扩展页面，因此重载扩展、重新打开调度页仍需用户点击。本轮未公开发布、推送或升版本，本地包仍显示 v0.2.7。
+
+Final follow-up checks / 最终补丁检查：`npm run test:e2e -- navigation.spec.ts` **2/2 passed (18.1s)** with real-host DNS denied, covering horizontal traversal and direct-tab discussion drafts with a broken page popup handler. `python scripts/package-extension.py` verified **17 ZIP entries / 1.03 MB**, CRC and byte equality to dist; `git diff --check` passed. These two browser tests were rerun on the final patch; the earlier full 37-test run was not repeated for this small follow-up.
+
+最终两项导航浏览器回归已通过；全量 37 项属于上一轮结果，本次未重复全量浏览器套件。最终本地 ZIP 已重新打包并核验。
+
+### 9.45 Parent-document submit confirmation dialog / 提交确认弹框渲染在父文档的自动提交修复（2026-10-21，0.2.8 M1）
+
+用户据真实课程页截图反馈「没有自动点击提交，请所有模式都支持自动提交」，截图显示：题目在嵌套任务 iframe 内，而站点在**顶层页面**弹出「Tip / Submit? / Cancel / Submit」确认框。定位：`CONFIRM_WORK` 旧实现只在当前任务帧（`taskDocuments()`）内查找确认框，父文档弹出的框被漏掉，`awaitSubmission` 轮询始终点不到，提交无法被确认——表现为「不自动提交」。
+
+Verified（本机，本轮）：①`submissionDocuments()` 从任务帧**向上遍历祖先文档直至顶层**（≤6 层，`frameElement.ownerDocument`），使 `CONFIRM_WORK` 在任务帧＋各祖先文档中一并查找确认框；命中仍受「唯一确认框」守卫约束（多义即停、不猜点）。②`SEND_WORK` 的**提交按钮唯一性搜索仍限定在任务帧**（`taskDocuments()`），只把「已存在确认框」的收养检测扩到祖先文档，避免父页其它 Submit 控件污染「恰好一个提交按钮」判定。③该提交路径为**所有解答题目的模式共用**——刷题、刷课、自动运行、独立作业/测验页均经 `solveQuiz`→`SEND_WORK`→`awaitSubmission`→`CONFIRM_WORK`，修复自动覆盖；**只刷课模式**按用户 2026-10-19 明确授权仍「跳过题目、不读取、不调用模型、不提交」，本批不改其语义。④修正上一轮遗留的 `submissionDocuments()` 类型错误（`current` 可能为 `undefined`）。新增 1 项跨 realm 回归单测：真实嵌套 iframe 出题、确认框挂在父文档，断言 `SEND_WORK` 恰好点一次任务帧内提交、`CONFIRM_WORK` 经祖先遍历恰好点一次父文档确认、且不重复点提交。`npm run typecheck` 通过、`npm test` **501 项通过（30 文件）**、`npm run build` 通过，无回归、未改安全边界（单次提交、缺题不提交、完成只认站点绿标不变）。
+
+Unverified / 未验证：真站 Chrome 中该父文档「Submit?」框被自动点下的实机观察仍待用户复现；扩展重载与重新起跑属用户动作。是否要让**只刷课模式**也解答题并提交、或「即使有未确定题也强制提交」，均越出既有授权/硬约束，需用户明确单独授权，本批未做。
+
+### 9.46 All-mode submission and discussion publication / 全模式提交与讨论发表（2026-10-22）
+
+The user explicitly requested automatic submission in all modes and selected “Include discussion replies”. This supersedes the draft-only limitation in §9.43/9.44 and the older videos-only submission limitation in §9.45. Videos-only now submits verified existing complete answers/drafts without generating missing answers; course/question modes generate missing answers through the existing pipeline. No incomplete submission or formal-exam support was enabled.
+
+用户明确要求所有模式自动提交，并选择「也自动发表讨论回复」，覆盖先前仅草稿以及只刷课一律不提交的限制。只刷课仅提交已核验的完整现有答案/草稿，不生成缺答；刷课/刷题复用现有生成管线。不提交缺题、不扩展正式考试。
+
+Changes: active-task plus ancestor confirmation search; adoption of an inherited dialog after complete verification; another read-back before confirmation; single discussion publication with new matching reply plus cleared-editor evidence; return to the unchanged bound course; separate publication count; repeated completed-run actions cannot resend/recount. Real DOM and static-vs-live limits are documented in `auto-submit-2026-10-22.md`. The screenshot's exact dialog frame ownership was not verified live, because the course had moved on when inspected.
+
+新增跨祖先确认、完整核验后接管已有确认框、确认前再次回读、讨论单次发表及双证据、返回原绑定课程、发表独立计数、完成后防重发/重复计数。真实证据与限制见新报告；截图弹框的实际文档归属未现场核实，取证时已进入下一章。
+
+Verified so far / 已执行通过：`npm test` **513/513 (30 files)**; `npm run typecheck`; `npm run build`. The focused MV3 navigation suite passed **7/7**, covering horizontal traversal plus quiz parent-dialog confirmation and discussion publication/return in all three modes. Final browser and packaging results are recorded below after completion.
+
+Unverified / 未验证：最终扩展真实整课、其它弹框/讨论编辑器皮肤、网络超时后历史运行状态恢复。浏览器工具已发表一条用户已有讨论草稿并观察新回复，但不是最终扩展实跑。未提交、推送、升版本或公开发布；本地仍标 v0.2.7。
+
+Final checks / 最终结果：`npm run test:e2e` **42/42 passed (3.5 min)**, including the seven navigation/submission/publication cases on a fresh copy of the final built extension. `npm test` **513/513**; typecheck and build passed. `python scripts/package-extension.py` verified **17 ZIP entries / 1.03 MB**, CRC and dist byte equality; `git diff --check` passed. ZIP SHA-256: `42592736c911b08cf80063451a44b7237a1a9124177df29056721f4451044ccd`.
+
+最终本地安装包：`release/study-assistant-extension.zip`。先停止旧运行，覆盖原加载目录（若使用解压副本），重载扩展、刷新课程、新开调度页；讨论权限未授予时点击「授权讨论页面」。

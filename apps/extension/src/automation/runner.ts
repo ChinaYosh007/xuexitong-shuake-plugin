@@ -1,5 +1,5 @@
 import type { StudyAnswer, StudyQuestion } from "@study/contracts";
-import type { AutomationCommand, NextNoticeOutcome, PopupOutcome, TaskQuestion, TaskSnapshot } from "./protocol";
+import type { AutomationCommand, NextNoticeOutcome, PopupOutcome, ScrollOutcome, SeekOutcome, TaskDiagnostics, TaskQuestion, TaskSnapshot } from "./protocol";
 import { answerIsUncertain, chooseAnswer, choosePlurality, imageIsUnclear, rankAnswerCandidates } from "./consensus";
 import { WorkPool } from "./work-pool";
 import { QuestionImageError } from "./question-image-error";
@@ -17,9 +17,19 @@ export interface RunOptions {
    * explicit NEXT authorization instead of being answered. Mid-video popup questions (弹题)
    * are still answered by bounded page-side enumeration — they gate playback and never use the model. */
   videosOnly: boolean;
+  /** 0.2.8 §3 (2026-10-21 用户授权): when true, an unfinished VIDEO may try a site-allowed seek
+   * to its tail to trigger the site's own completion check before falling back to full playback.
+   * Only standard `video.currentTime` is written — no synthetic drag, no fabricated `ended`. */
+  allowVideoSeek: boolean;
+  /** Per-course probe cache result carried in from settings so a course known to refuse seeking is
+   * not re-probed (which would repeatedly roll the learner's progress back). */
+  videoSeekPolicy: "allowed" | "denied" | "unknown";
+  /** 0.2.8 §4: when true, an opened RESOURCE (PDF/PPT) module may be structurally scrolled toward
+   * its bottom to prompt the site's own completion; completion still requires the site green. */
+  allowMaterialScroll: boolean;
 }
 /** requestsPerMinute = 0 means unlimited (self-hosted BYOK deployment). */
-const DEFAULT_OPTIONS: RunOptions = { startQuestion: 1, requestConcurrency: 2, requestsPerMinute: 0, continueTasks: true, sendImages: "auto", skipVideos: false, videosOnly: false };
+const DEFAULT_OPTIONS: RunOptions = { startQuestion: 1, requestConcurrency: 2, requestsPerMinute: 0, continueTasks: true, sendImages: "auto", skipVideos: false, videosOnly: false, allowVideoSeek: false, videoSeekPolicy: "unknown", allowMaterialScroll: false };
 
 export interface ManualQuestion {
   index: number;
@@ -94,6 +104,7 @@ export interface RunnerState {
   question: number;
   questionCount: number;
   completedTasks: number;
+  publishedDiscussions: number;
   skippedResources: number;
   skippedVideos: number;
   /** 只刷课模式越过的未完成题目任务点数，不计入已完成任务。 */
@@ -115,9 +126,16 @@ export interface RunnerState {
   imageReplies: Array<{ captured: TaskQuestion; samples: StudyAnswer[] }>;
   /** Live auto-play feedback for the current VIDEO task; empty on every other task kind. */
   videoStatus: string;
+  /** Seek-to-tail policy discovered this run (or echoed from the option) so the page can persist
+   * the per-course cache. "unknown" means not probed yet. 0.2.8 §3. */
+  videoSeekPolicy: "allowed" | "denied" | "unknown";
+  /** D2 (0.2.8): latest redacted structure-only diagnostics from the page, safe to copy/paste. */
+  diagnostics?: TaskDiagnostics;
 }
 export interface RunnerPort {
-  command(command: Omit<AutomationCommand, "requestId" | "runId">): Promise<{ snapshot?: TaskSnapshot; captured?: TaskQuestion; questions?: TaskQuestion[]; existingAccepted?: boolean; popup?: PopupOutcome; nextNotice?: NextNoticeOutcome }>;
+  /** Restore command routing to the bound course after a verified discussion publication. */
+  returnToCourse?(): Promise<void>;
+  command(command: Omit<AutomationCommand, "requestId" | "runId">): Promise<{ snapshot?: TaskSnapshot; captured?: TaskQuestion; questions?: TaskQuestion[]; existingAccepted?: boolean; popup?: PopupOutcome; seek?: SeekOutcome; scroll?: ScrollOutcome; nextNotice?: NextNoticeOutcome }>;
   /** Incremental source reader; older ports may provide only READ_ALL. */
   readQuestion?(index: number, snapshot: TaskSnapshot): Promise<TaskQuestion>;
   answer(question: TaskQuestion): Promise<StudyAnswer>;
@@ -126,13 +144,15 @@ export interface RunnerPort {
 }
 
 export function createRunnerState(): RunnerState {
-  return { phase: "IDLE", step: "待启动", question: 0, questionCount: 0, completedTasks: 0, skippedResources: 0, skippedVideos: 0, skippedQuizzes: 0, error: "",
+  return { phase: "IDLE", step: "待启动", question: 0, questionCount: 0, completedTasks: 0, publishedDiscussions: 0, skippedResources: 0, skippedVideos: 0, skippedQuizzes: 0, error: "",
     captured: 0, inFlight: 0, buffered: 0, modelRequests: 0, agreement: "", monitorChecks: 0, lastCheck: 0, busy: false,
-    collected: 0, filled: 0, retained: 0, manualItems: [], manualSaving: false, imageReplies: [], videoStatus: "" };
+    collected: 0, filled: 0, retained: 0, manualItems: [], manualSaving: false, imageReplies: [], videoStatus: "", videoSeekPolicy: "unknown" };
 }
 
 /** Pinned-tab runner. The model returns data only; every browser action is fixed in code. */
 export class CourseRunner {
+  private discussionSource: { courseKey: string; taskKey: string } | null = null;
+  private discussionReplyTask = false;
   private running = false;
   private bound: { courseKey: string; taskKey: string } | null = null;
   private wake = new Set<() => void>();
@@ -141,6 +161,25 @@ export class CourseRunner {
   private rateTail: Promise<void> = Promise.resolve();
   private pausedAt: number | null = null;
   private pausedTime = 0;
+  /**
+   * P2 (0.2.8): throttle-aware active clock. Chrome throttles/freezes timers in a backgrounded
+   * runner page, so a real (wall-clock) submission window can be consumed entirely while the page
+   * did nothing — the root cause of "auto-submit works on my machine, not on another". Every wait
+   * credits only the active portion of its sleep here, and submission waits are bounded by this
+   * clock (plus a wall-clock hard cap), not by wall time alone.
+   */
+  private activeMs = 0;
+  /** P1: submission wait budgets — active 180s / wall 15min (docs/optimization-plan-0.2.8.md §6). */
+  private static readonly SUBMIT_ACTIVE_BUDGET_MS = 180000;
+  private static readonly SUBMIT_WALL_BUDGET_MS = 900000;
+  /** P3: the manual "re-check submission" entry is a short observation, not a fresh long wait. */
+  private static readonly RECHECK_ACTIVE_BUDGET_MS = 8000;
+  private static readonly RECHECK_WALL_BUDGET_MS = 30000;
+  /** P1: a submit often navigates; tolerate a few consecutive INSPECT failures before giving up. */
+  private static readonly INSPECT_TOLERANCE = 3;
+  /** 2026-10-21 用户请求：提交被站点确认后、点 NEXT 进入下一任务前先停留该时长，给用户复核/重做的窗口。
+   * 仅在 result==="confirmed"（站点确认但仍停在当前任务）时生效；站点自行跳转（"advanced"）时无从插入等待。 */
+  private static readonly SUBMIT_ADVANCE_DWELL_MS = 2000;
   private options: RunOptions = DEFAULT_OPTIONS;
   constructor(readonly state: RunnerState, private readonly port: RunnerPort) {}
 
@@ -150,12 +189,27 @@ export class CourseRunner {
     return this.state.phase === "RUNNING";
   }
   private async delay(ms: number): Promise<boolean> {
-    const deadline = this.port.now() + ms;
-    while (this.port.now() < deadline) {
+    const target = this.port.now() + ms;
+    while (this.port.now() < target) {
       if (!await this.checkpoint()) return false;
-      await this.port.sleep(Math.min(500, deadline - this.port.now()));
+      const before = this.port.now();
+      const step = Math.min(500, target - before);
+      await this.port.sleep(step);
+      // Credit at most 1.5× the requested step: time beyond that was a throttled/frozen
+      // background page and must not consume an active-time submission budget.
+      this.activeMs += Math.min(this.port.now() - before, step * 1.5);
     }
     return this.checkpoint();
+  }
+  /**
+   * P2: a checkpoint-free wait that still feeds the active clock. Used by the submission
+   * observer so a submit can finish confirming even while the run is parked in ERROR/
+   * NEEDS_INPUT/DONE, without a backgrounded tab's frozen timers eating the active budget.
+   */
+  private async sleepActive(ms: number): Promise<void> {
+    const before = this.port.now();
+    await this.port.sleep(ms);
+    this.activeMs += Math.min(this.port.now() - before, ms * 1.5);
   }
   /** Manual补答 retries run while the main pipeline stays parked in NEEDS_INPUT. */
   private async checkpointManual(): Promise<boolean> {
@@ -176,9 +230,11 @@ export class CourseRunner {
     if (!result.snapshot) throw new Error("课程状态响应不完整。");
     if (this.bound && result.snapshot.courseKey !== this.bound.courseKey) throw new Error("课程已变化，调度器停止。");
     this.state.monitorChecks++; this.state.lastCheck = this.port.now();
+    this.state.diagnostics = result.snapshot.diagnostics;
+    this.discussionReplyTask = result.snapshot.discussionReply === true;
     return result.snapshot;
   }
-  private async action(action: AutomationCommand["action"], extra: Partial<AutomationCommand> = {}): Promise<{ snapshot?: TaskSnapshot; captured?: TaskQuestion; questions?: TaskQuestion[]; existingAccepted?: boolean; nextNotice?: NextNoticeOutcome }> {
+  private async action(action: AutomationCommand["action"], extra: Partial<AutomationCommand> = {}): Promise<{ snapshot?: TaskSnapshot; captured?: TaskQuestion; questions?: TaskQuestion[]; existingAccepted?: boolean; seek?: SeekOutcome; scroll?: ScrollOutcome; nextNotice?: NextNoticeOutcome }> {
     if (!await this.checkpoint()) throw new Error("已停止。");
     return this.port.command({ action, ...this.bound!, ...extra });
   }
@@ -200,6 +256,127 @@ export class CourseRunner {
       }
     }
     throw lastError;
+  }
+  /** 0.2.8 §3：拖动到末尾后观察站点自身完成标记的最长时间。 */
+  private static readonly SEEK_WATCH_MS = 20000;
+  /** currentTime 比拖动目标回退超过该秒数即判定站点禁止拖动。 */
+  private static readonly SEEK_ROLLBACK_SECONDS = 3;
+  /** 仅在视频刚开始（播放位置不超过该秒数）时才做可拖性试探，避免中途试探损失已有进度。 */
+  private static readonly SEEK_PROBE_MAX_CURRENT_SECONDS = 10;
+  /**
+   * 2026-10-21 用户授权：站点允许拖动时把播放位置定位到末尾，以触发站点自己的完成判定；
+   * 只写标准 `video.currentTime`，不派发伪造事件、不模拟鼠标拖动；站点禁止或进度回退时回退
+   * 完整播放。**完成证据仍是站点任务点变绿**，本方法绝不自造完成。返回 fallback 时调用方
+   * 走原有完整播放链路（含弹题枚举）。
+   */
+  private async trySeekVideoCompletion(
+    snapshot: TaskSnapshot,
+    options: RunOptions
+  ): Promise<{ outcome: "completed" | "advanced" | "fallback"; snapshot: TaskSnapshot; policy: "allowed" | "denied" | "unknown" }> {
+    this.state.videoSeekPolicy = options.videoSeekPolicy;
+    if (options.videoSeekPolicy === "denied") return { outcome: "fallback", snapshot, policy: "denied" };
+    const video = snapshot.video;
+    if (options.videoSeekPolicy === "unknown" &&
+      (!(video && video.duration > 0) || (video?.currentTime ?? 0) > CourseRunner.SEEK_PROBE_MAX_CURRENT_SECONDS)) {
+      // 未就绪或已播放到中段的视频不试探，直接完整播放，保留 unknown 让下次从头再探。
+      return { outcome: "fallback", snapshot, policy: "unknown" };
+    }
+    const seekResult = await this.action("SEEK_TAIL");
+    const seek = seekResult.seek;
+    if (!seek || !seek.applied) return { outcome: "fallback", snapshot, policy: options.videoSeekPolicy };
+    const target = seek.currentTime;
+    // 让最后一段真实播放到结束（很多站点在真正 ended 时才置完成标记）。
+    await this.playWithRetry();
+    this.state.videoStatus = `尝试定位到末尾（${Math.round(target)}s），等待站点确认完成`;
+    const watchDeadline = this.port.now() + CourseRunner.SEEK_WATCH_MS;
+    const denied = async (current: TaskSnapshot): Promise<{ outcome: "completed" | "advanced" | "fallback"; snapshot: TaskSnapshot; policy: "allowed" | "denied" | "unknown" }> => {
+      let latest = current;
+      try { await this.action("PLAY_FROM_START"); latest = await this.inspect(); }
+      catch { /* 回退播放失败仍按完整播放链路继续，由其抛出具体错误 */ }
+      this.state.videoSeekPolicy = "denied";
+      return { outcome: "fallback", snapshot: latest, policy: "denied" };
+    };
+    let latest = snapshot;
+    while (this.port.now() < watchDeadline) {
+      if (!await this.delay(1000)) throw new Error("已停止。");
+      try { latest = await this.inspect(); }
+      catch { continue; }
+      if (latest.taskKey !== this.bound?.taskKey) { this.state.videoSeekPolicy = "allowed"; return { outcome: "advanced", snapshot: latest, policy: "allowed" }; }
+      if (latest.completed) { this.state.videoSeekPolicy = "allowed"; return { outcome: "completed", snapshot: latest, policy: "allowed" }; }
+      const at = latest.video?.currentTime ?? 0;
+      if (latest.video && at < target - CourseRunner.SEEK_ROLLBACK_SECONDS) return denied(latest);
+    }
+    // 拖动到末尾后 20s 内站点仍未变绿：判定禁止拖动，回退完整播放。
+    return denied(latest);
+  }
+  /**
+   * The 0.2.7 full-play monitoring loop, extracted verbatim so a successful site-allowed
+   * seek-to-tail (0.2.8 §3) can skip it while every other video path still runs the identical
+   * play → watch-for-ended → popup-enum → no-progress-timeout logic. Completion is still only
+   * accepted when the site marks the task green; nothing here fabricates progress.
+   */
+  private async playVideoToCompletion(snapshot: TaskSnapshot): Promise<TaskSnapshot> {
+    let popupPasses = 0;
+    // A restarted run may already be parked at a forced question. Playing first can
+    // exhaust all retries before the question gets a chance to release the player.
+    if (snapshot.video?.paused && !snapshot.video.ended) {
+      const popup = await this.enumPopup();
+      if (popup.found && !popup.resolved) throw new Error(`视频弹题自动作答未通过（已枚举 ${popup.attempts}/${popup.options} 个选项，弹题仍在），请人工处理后重新启动。`);
+      if (popup.resolved) popupPasses++;
+    }
+    await this.playWithRetry();
+    snapshot = await this.inspect();
+    if (snapshot.taskKey !== this.bound!.taskKey) throw new Error("播放期间任务已变化。");
+    this.state.videoStatus = this.videoStatusOf(snapshot.video);
+    let lastPlayAt = this.port.now();
+    let endedAt: number | null = null;
+    let lastTime = snapshot.video?.currentTime ?? 0;
+    let progressAt = this.port.now();
+    let seenPausedTime = this.pausedTime;
+    let videoDeadline = this.port.now() + Math.max(600000, Math.min(14400000, ((snapshot.video?.duration ?? 0) + 300) * 1000));
+    while (!snapshot.completed) {
+      if (!await this.delay(2500)) return snapshot;
+      snapshot = await this.inspect();
+      if (snapshot.taskKey !== this.bound!.taskKey) throw new Error("播放期间任务已变化。");
+      if (snapshot.completed) break;
+      this.state.videoStatus = this.videoStatusOf(snapshot.video);
+      if (this.pausedTime !== seenPausedTime) {
+        videoDeadline += this.pausedTime - seenPausedTime;
+        seenPausedTime = this.pausedTime; progressAt = this.port.now();
+      }
+      if (!snapshot.video) throw new Error("监听发现播放器已移除，已停止。");
+      if (snapshot.video.paused && !snapshot.video.ended) {
+        // 站点弹题会暂停视频：先按 2026-10-19 授权免人工枚举作答（不调模型），再走恢复播放。
+        const popup = await this.enumPopup();
+        if (popup.found && popup.resolved) {
+          if (++popupPasses > 10) throw new Error("同一视频的弹题已连续自动作答超过 10 次，已停止，请人工检查。");
+          this.state.videoStatus = `视频弹题已自动作答（枚举第 ${popup.attempts} 个选项通过），等待视频继续`;
+          progressAt = this.port.now();
+          lastTime = snapshot.video.currentTime;
+          try { if (snapshot.video.paused) await this.playWithRetry(); } catch { /* 下一轮轮询继续恢复 */ }
+          continue;
+        }
+        if (popup.found) throw new Error(`视频弹题自动作答未通过（已枚举 ${popup.attempts}/${popup.options} 个选项，弹题仍在），请人工处理后重新启动。`);
+      }
+      if (snapshot.video.currentTime > lastTime || snapshot.completed || snapshot.video.ended) progressAt = this.port.now();
+      lastTime = snapshot.video.currentTime;
+      if (this.port.now() - progressAt > 60000) throw new Error(snapshot.video.error
+        ? "播放器错误持续超过 60 秒且没有播放进展，请检查课程页面或网络。"
+        : "视频超过 60 秒没有播放进展，请检查前台播放或网络要求。");
+      if (snapshot.video?.ended) endedAt ??= this.port.now();
+      if ((endedAt !== null && this.port.now() - endedAt > 60000) || this.port.now() > videoDeadline) {
+        throw new Error("视频播放后站点仍未确认任务完成，请人工检查；不会跳过任务。");
+      }
+      if (snapshot.video.paused && !snapshot.video.ended && this.port.now() - lastPlayAt >= 5000) {
+        // A brief network switch may pause/rebuffer several times. Use actual elapsed
+        // time without progress as the limit, rather than just three polling samples.
+        lastPlayAt = this.port.now();
+        try { await this.action("PLAY"); }
+        catch (error) { this.state.videoStatus = `正在恢复播放：${error instanceof Error ? error.message : "播放器暂未就绪"}`; }
+      }
+    }
+    this.state.videoStatus = "站点已确认完成";
+    return snapshot;
   }
   /**
    * 视频弹题（2026-10-19 用户授权：刷课途中的强制弹题不上报人工、不调模型，页面侧按
@@ -559,7 +736,6 @@ export class CourseRunner {
    * 该页面没有任务链（无下一任务），提交确认即结束本轮；不重复提交、不推断成绩。
    */
   private async runStandaloneWork(snapshot: TaskSnapshot, options: RunOptions, startQuestion: number): Promise<void> {
-    if (options.videosOnly) throw new Error("只刷课模式只处理视频任务；作业/测验页请用刷题模式。");
     if (snapshot.completed || snapshot.kind === "COMPLETED") {
       this.state.phase = "DONE"; this.state.step = "作业页此前已提交，无需重复作答"; return;
     }
@@ -567,39 +743,42 @@ export class CourseRunner {
     if (!snapshot.questionCount || snapshot.questionCount > 200) throw new Error("作业题目数量不受支持。");
     if (startQuestion > snapshot.questionCount) throw new Error("起始题号超过当前作业题目数量。");
     this.state.questionCount = snapshot.questionCount;
-    await this.solveQuiz(snapshot, { ...options, startQuestion });
+    if (options.videosOnly) {
+      if (!await this.adoptCompleteQuiz(snapshot)) {
+        this.state.phase = "DONE"; this.state.step = "只刷课模式：作业答案不完整，未提交"; return;
+      }
+    } else await this.solveQuiz(snapshot, { ...options, startQuestion });
     if (!await this.checkpoint()) return;
     this.state.step = `已回填 ${this.state.filled}/${snapshot.questionCount} 题，提交作业并等待站点确认`;
+    const submitTaskKey = snapshot.taskKey;
     await this.action("SEND_WORK");
-    const deadline = this.port.now() + 60000;
-    let missing = 0;
-    let confirmed = false;
-    do {
-      if (!await this.delay(1000)) return;
-      // 提交后站点可能先弹确认框、再跳转；两者都不允许打断提交后等待。
-      try { await this.action("CONFIRM_WORK"); } catch { /* 页面已跳转或弹窗结构变化 */ }
-      try { snapshot = await this.inspect(); missing = 0; }
-      catch {
-        if (++missing >= 3) {
-          // 页面已离开作答视图，站点没有给出文字完成标记：如实结束，不重复提交、不宣称核验。
-          this.state.phase = "DONE";
-          this.state.step = "已点击提交；页面已跳转，站点未返回可核验的完成标记，请人工确认结果";
-          return;
-        }
-        continue;
-      }
-      if (this.bound && snapshot.taskKey !== this.bound.taskKey) {
-        // 站点提交后离开当前作业页（如返回课程任务页）：提交已被接受，本页不再重复提交。
-        this.state.completedTasks++;
-        this.state.phase = "DONE"; this.state.step = "作业页已提交，站点已跳转离开当前作业页";
-        return;
-      }
-      if (snapshot.completed) { confirmed = true; break; }
-      this.state.step = `已点击提交，等待站点确认（剩余 ${Math.max(0, Math.ceil((deadline - this.port.now()) / 1000))} 秒）`;
-    } while (this.port.now() < deadline);
-    if (!confirmed) throw new Error("已点击提交但站点未返回可核验的完成标记；不会重复提交，请人工确认页面结果。");
-    this.state.completedTasks++;
-    this.state.phase = "DONE"; this.state.step = "作业页刷题完成，站点已确认提交";
+    const { result } = await this.awaitSubmission(submitTaskKey, { interruptible: true });
+    if (!await this.checkpoint()) return;
+    if (result === "confirmed") {
+      this.state.completedTasks++;
+      this.state.phase = "DONE"; this.state.step = "作业页刷题完成，站点已确认提交";
+      return;
+    }
+    if (result === "advanced") {
+      // 站点提交后离开当前作业页（如返回课程任务页）：提交已被接受，本页不再重复提交。
+      this.state.completedTasks++;
+      this.state.phase = "DONE"; this.state.step = "作业页已提交，站点已跳转离开当前作业页";
+      return;
+    }
+    // 已点击提交但站点没有给出可核验的完成标记：如实结束，不重复提交、不宣称核验、不计完成。
+    this.state.phase = "DONE";
+    this.state.step = "已点击提交；站点未返回可核验的完成标记，请人工确认结果";
+  }
+
+  /** Videos-only runs may submit complete existing answers, without generating missing ones. */
+  private async adoptCompleteQuiz(snapshot: TaskSnapshot): Promise<boolean> {
+    if (snapshot.questionCount < 1 || snapshot.questionCount > 200) return false;
+    for (let index = 0; index < snapshot.questionCount; index++) {
+      const existing = await this.action("ADOPT_EXISTING", { index });
+      if (!existing.existingAccepted) return false;
+      this.state.retained++;
+    }
+    return true;
   }
 
   private async requestForManual(captured: TaskQuestion): Promise<StudyAnswer> {
@@ -791,12 +970,14 @@ export class CourseRunner {
    * retry after a stopped automatic path.
    */
   async submitNow(): Promise<void> {
-    if (!this.bound || this.state.manualSaving) return;
+    if (!this.bound || this.state.manualSaving || this.state.phase === "DONE") return;
     this.state.manualSaving = true;
     try {
       this.state.step = "立即提交：点击站点提交按钮";
+      const discussion = this.discussionReplyTask;
       const result = await this.submitAndWait();
-      if (result === "confirmed" || result === "advanced") this.state.completedTasks++;
+      if (discussion && result === "confirmed") this.state.publishedDiscussions++;
+      else if (!discussion && (result === "confirmed" || result === "advanced")) this.state.completedTasks++;
     } finally {
       this.state.manualSaving = false;
       this.notify();
@@ -804,33 +985,123 @@ export class CourseRunner {
   }
 
   /**
-   * Click the site's own submit button once, then poll the completion marker for up to
-   * 60 seconds. "advanced" means the site itself moved to the next task. Submission is
-   * still guarded by course-page (full read-back before the click, one attempt only).
+   * P1/P3 (0.2.8): watch a submission the caller has already clicked exactly once. Bounded by a
+   * throttle-aware active-time budget plus a wall-clock hard cap, so a backgrounded page no longer
+   * burns the whole window while doing nothing (the "no auto-submit on another machine" root
+   * cause). Tolerates a few consecutive INSPECT failures because an accepted submit often
+   * navigates, and NEVER re-clicks submit. Returns the outcome and the latest snapshot so the
+   * caller can refresh its view.
+   *
+   * `interruptible` (scheduler loop): pause-aware delay + bound-checked actions, so 暂停/停止
+   * still take effect during the wait. Non-interruptible (manual 立即提交 / ERROR recovery, which
+   * run while parked outside RUNNING): a raw checkpoint-free wait, because those phases must still
+   * be able to observe a submit to completion.
+   */
+  private async awaitSubmission(
+    taskKeyAtSubmit: string,
+    budgets: { activeMs?: number; wallMs?: number; interruptible?: boolean } = {}
+  ): Promise<{ result: "confirmed" | "advanced" | "unconfirmed"; snapshot?: TaskSnapshot }> {
+    if (!this.bound) return { result: "unconfirmed" };
+    const activeBudget = budgets.activeMs ?? CourseRunner.SUBMIT_ACTIVE_BUDGET_MS;
+    const wallBudget = budgets.wallMs ?? CourseRunner.SUBMIT_WALL_BUDGET_MS;
+    const interruptible = budgets.interruptible ?? false;
+    const activeStart = this.activeMs;
+    const wallStart = this.port.now();
+    let inspectFailures = 0;
+    let lastSnapshot: TaskSnapshot | undefined;
+    while (this.activeMs - activeStart < activeBudget && this.port.now() - wallStart < wallBudget) {
+      if (this.state.phase === "STOPPED") return { result: "unconfirmed", snapshot: lastSnapshot };
+      if (interruptible) { if (!await this.delay(1000)) return { result: "unconfirmed", snapshot: lastSnapshot }; }
+      else await this.sleepActive(1000);
+      // A site may show its own confirm dialog after the click; a rejection is not a failed
+      // submission (the page may already have advanced past the dialog), so ignore it.
+      try {
+        if (interruptible) await this.action("CONFIRM_WORK");
+        else await this.port.command({ action: "CONFIRM_WORK", ...this.bound });
+      } catch { /* navigated or no dialog */ }
+      let snapshot: TaskSnapshot;
+      try { snapshot = await this.inspect(); inspectFailures = 0; lastSnapshot = snapshot; }
+      catch {
+        // A submit that navigates makes follow-up INSPECT fail transiently. Tolerate a bounded
+        // number of misses and keep observing; persistent failure falls to the dual budget.
+        if (++inspectFailures > CourseRunner.INSPECT_TOLERANCE) {
+          this.state.step = `提交后课程页连续 ${inspectFailures} 次无响应，可能已跳转，继续复核`;
+        }
+        continue;
+      }
+      if (snapshot.taskKey !== taskKeyAtSubmit) { this.state.step = "站点已自动进入下一任务"; return { result: "advanced", snapshot }; }
+      if (snapshot.completed) { this.state.step = "站点已确认提交成功"; return { result: "confirmed", snapshot }; }
+      const left = Math.max(0, Math.ceil((activeBudget - (this.activeMs - activeStart)) / 1000));
+      this.state.step = `已点击提交，等待站点确认（活跃剩余 ${left} 秒）`;
+    }
+    this.state.step = "已点击提交但站点未确认；不会重复提交，请人工确认页面结果";
+    return { result: "unconfirmed", snapshot: lastSnapshot };
+  }
+
+  /**
+   * Click the site's own submit button once, then wait for the completion marker. Submission is
+   * still guarded by course-page (full read-back before the click, one attempt only). The manual
+   * submit and ERROR-recovery entries run outside RUNNING, so this uses the checkpoint-free wait.
    */
   private async submitAndWait(): Promise<"confirmed" | "advanced" | "unconfirmed" | "failed"> {
     if (!this.bound) return "failed";
-    try {
-      await this.port.command({ action: "SEND_WORK", ...this.bound });
-      const deadline = this.port.now() + 60000;
-      let outcome: "confirmed" | "advanced" | "unconfirmed" = "unconfirmed";
-      do {
-        await this.port.sleep(1000);
-        // A site may navigate/advance as soon as the submit is accepted; the confirmation
-        // helper is bound to the old task key and would then reject. That does not mean the
-        // submission failed, so ignore a confirmation failure and inspect the task instead.
-        try { await this.port.command({ action: "CONFIRM_WORK", ...this.bound }); } catch { /* page may have advanced */ }
-        const snapshot = await this.inspect();
-        if (snapshot.taskKey !== this.bound.taskKey) { outcome = "advanced"; this.state.step = "站点已自动进入下一任务"; break; }
-        if (snapshot.completed) { outcome = "confirmed"; this.state.step = "站点已确认提交成功"; break; }
-        this.state.step = "已点击提交，等待站点确认（剩余 " + Math.max(0, Math.ceil((deadline - this.port.now()) / 1000)) + " 秒）";
-      } while (this.port.now() < deadline);
-      if (outcome === "unconfirmed") this.state.step = "已点击提交但站点未确认；请人工检查后重启任务";
-      return outcome;
-    } catch (error) {
+    const taskKey = this.bound.taskKey;
+    try { await this.port.command({ action: "SEND_WORK", ...this.bound }); }
+    catch (error) {
       this.state.step = "提交失败：" + (error instanceof Error ? error.message : "未知原因");
       return "failed";
     }
+    return (await this.awaitSubmission(taskKey)).result;
+  }
+
+  /**
+   * P3 (0.2.8): re-observe a submission that was already clicked, WITHOUT ever clicking submit
+   * again. The runner page's "重新检查提交结果" entry uses this after the user handled the page by
+   * hand or returned to the foreground; if the site now shows completion or has advanced, count
+   * it honestly. No evidence of completion is never fabricated into a submit or a completion.
+   */
+  async recheckSubmission(): Promise<void> {
+    if (!this.bound || this.running || this.state.manualSaving || this.state.phase === "DONE") return;
+    const taskKey = this.bound.taskKey;
+    const discussion = this.discussionReplyTask;
+    this.state.manualSaving = true;
+    try {
+      const { result, snapshot } = await this.awaitSubmission(taskKey, {
+        activeMs: CourseRunner.RECHECK_ACTIVE_BUDGET_MS,
+        wallMs: CourseRunner.RECHECK_WALL_BUDGET_MS,
+        interruptible: false
+      });
+      if (result === "confirmed") {
+        if (discussion) this.state.publishedDiscussions++;
+        else this.state.completedTasks++;
+        this.state.error = ""; this.state.phase = "DONE";
+        this.state.step = discussion ? "复核：讨论已发表，已核验新回复" : "复核：站点已确认提交成功";
+        if (snapshot) this.bound = { courseKey: snapshot.courseKey, taskKey: snapshot.taskKey };
+      } else if (result === "advanced" && !discussion) {
+        this.state.completedTasks++; this.state.error = ""; this.state.phase = "DONE";
+        this.state.step = "复核：站点已进入下一任务，本任务已完成";
+        if (snapshot) this.bound = { courseKey: snapshot.courseKey, taskKey: snapshot.taskKey };
+      } else {
+        this.state.step = "复核后仍未见站点完成标记；若已在页面人工提交，请以站点结果为准";
+      }
+      this.notify();
+    } finally {
+      this.state.manualSaving = false;
+      this.notify();
+    }
+  }
+
+  /**
+   * P2/P3 (0.2.8): called when the runner page becomes visible again after being backgrounded.
+   * A submission wait may have been starved by timer throttling; do one light compensation
+   * (confirm dialog check + one inspect refresh) without ever re-clicking submit. No-throw: the
+   * next scheduled poll reports any real problem.
+   */
+  async onForeground(): Promise<void> {
+    if (!this.bound || this.state.manualSaving) return;
+    try { await this.port.command({ action: "CONFIRM_WORK", ...this.bound }); } catch { /* not mid-submit */ }
+    try { await this.inspect(); } catch { /* transient navigation */ }
+    this.notify();
   }
 
   /**
@@ -968,6 +1239,7 @@ export class CourseRunner {
       this.state.phase = "ERROR"; this.state.error = "调度参数无效。"; return;
     }
     this.bound = null;
+    this.discussionSource = null;
     Object.assign(this.state, createRunnerState());
     await this.runLoop(options);
   }
@@ -981,7 +1253,7 @@ export class CourseRunner {
   private async runLoop(options: RunOptions): Promise<void> {
     this.running = true;
     this.fatal = null;
-    this.pausedAt = null; this.pausedTime = 0;
+    this.pausedAt = null; this.pausedTime = 0; this.activeMs = 0;
     this.state.busy = true;
     this.state.phase = "RUNNING"; this.state.error = "";
     this.state.manualItems = [];
@@ -1007,123 +1279,122 @@ export class CourseRunner {
           current.kind === "QUIZ" && current.questionCount === 0 && !options.videosOnly);
         if (loading(snapshot)) {
           const settleDeadline = this.port.now() + 25000;
+          let failures = 0;
           do {
             if (!await this.delay(1000)) return;
-            snapshot = await this.inspect();
+            try { snapshot = await this.inspect(); failures = 0; }
+            catch (error) { if (++failures > 8 || this.port.now() >= settleDeadline) throw error; }
           } while (loading(snapshot) && this.port.now() < settleDeadline);
         }
         const taskKeyBefore = snapshot.taskKey;
         let autoAdvanced = false;
+        let submitDwell = false;
+        let discussionHandled = false;
+        let discussionSkipped = false;
         this.bound.taskKey = snapshot.taskKey;
         if (visited.has(snapshot.taskKey)) throw new Error("任务跳转形成循环，已停止，避免重复答题和计费。");
         this.state.questionCount = snapshot.questionCount;
         this.state.question = 0; this.state.captured = 0; this.state.agreement = "";
         this.state.collected = 0; this.state.filled = 0; this.state.retained = 0; this.state.manualItems = [];
         this.state.videoStatus = "";
-        if (snapshot.standalone) {
+        if (snapshot.kind === "DISCUSSION") {
+          this.discussionSource = { courseKey: snapshot.courseKey, taskKey: snapshot.taskKey };
+          this.state.step = "打开讨论新页面，准备自动发表回复";
+          await this.action("OPEN_DISCUSSION");
+          snapshot = await this.inspect();
+          if (!snapshot.discussionReply) throw new Error("未绑定到已适配的讨论回复页面，已停止。");
+          this.bound = { courseKey: snapshot.courseKey, taskKey: snapshot.taskKey };
+        }
+        if (snapshot.discussionReply) {
+          this.state.questionCount = snapshot.questionCount;
+          if (!snapshot.completed) {
+            const existing = await this.action("ADOPT_EXISTING", { index: 0 });
+            if (existing.existingAccepted) this.state.retained++;
+            else if (options.videosOnly) discussionSkipped = true;
+            else await this.solveQuiz(snapshot, { ...options, startQuestion: 1 });
+            if (!await this.checkpoint()) return;
+            if (!discussionSkipped) {
+              this.state.step = "讨论回复已核验，自动发表并等待新回复出现";
+              await this.action("SEND_WORK");
+              const submission = await this.awaitSubmission(snapshot.taskKey, { interruptible: true });
+              if (submission.result !== "confirmed") throw new Error("讨论发表尚未确认，不会重复发表或跳过任务。");
+            }
+          }
+          if (!await this.checkpoint()) return;
+          if (!discussionSkipped) this.state.publishedDiscussions++;
+          if (!this.discussionSource || !this.port.returnToCourse) {
+            this.state.phase = "DONE"; this.state.step = discussionSkipped ? "只刷课模式：讨论无现有草稿，未发表" : "讨论已发表，已核验新回复"; return;
+          }
+          const source = this.discussionSource;
+          await this.action("RELEASE");
+          await this.port.returnToCourse();
+          snapshot = await this.inspect();
+          if (snapshot.courseKey !== source.courseKey || snapshot.taskKey !== source.taskKey) throw new Error("讨论发表后课程任务已变化，已停止自动跳转。");
+          this.bound = source; this.discussionSource = null;
+          discussionHandled = true; submitDwell = !discussionSkipped;
+        }
+        if (!discussionHandled && snapshot.standalone) {
           // 独立作业/测验作答页（2026-10-20 授权）：整卷作答一次、核验通过后点站点提交，
           // 没有任务链可继续，确认提交即结束本轮。
           await this.runStandaloneWork(snapshot, options, startQuestion);
           return;
         }
-        if (!options.continueTasks && snapshot.kind !== "QUIZ") throw new Error("刷题按钮仅处理当前章节题目任务。");
-        if (!snapshot.completed && snapshot.kind === "QUIZ" && options.videosOnly) {
+        if (!discussionHandled && !options.continueTasks && snapshot.kind !== "QUIZ") throw new Error("刷题按钮仅处理当前章节题目任务。");
+        const existingQuizReady = !discussionHandled && options.videosOnly && !snapshot.completed && snapshot.kind === "QUIZ"
+          ? await this.adoptCompleteQuiz(snapshot) : false;
+        if (discussionHandled) {
+          this.state.step = discussionSkipped ? "讨论无现有草稿，继续课程" : "讨论已发表，继续课程";
+        } else if (!snapshot.completed && (snapshot.kind === "QUIZ" || snapshot.kind === "DISCUSSION") && options.videosOnly && !existingQuizReady) {
           // 只刷课模式：用户只要视频。题目任务不读题、不调用模型、不提交，带显式跳过授权
           // 进入下一任务点（与刷题模式跳过视频对称），也不计入已完成任务。
-          this.state.step = "只刷课模式：跳过题目任务，不读取、不调用模型、不提交";
+          this.state.step = "只刷课模式：答案不完整，跳过题目任务，不调用模型";
         } else if (!snapshot.completed && snapshot.kind === "QUIZ") {
           if (!snapshot.questionCount || snapshot.questionCount > 200) throw new Error("任务题目数量不受支持。");
           if (startQuestion > snapshot.questionCount) throw new Error("起始题号超过当前任务题目数量。");
-          await this.solveQuiz(snapshot, { ...options, startQuestion });
+          if (!existingQuizReady) await this.solveQuiz(snapshot, { ...options, startQuestion });
           startQuestion = 1;
           if (!await this.checkpoint()) return;
           this.state.step = `已回填 ${this.state.filled}/${snapshot.questionCount} 题，提交本任务并等待站点确认`;
+          const submitTaskKey = snapshot.taskKey;
           await this.action("SEND_WORK");
-          const deadline = this.port.now() + 60000;
-          do {
-            if (!await this.delay(1000)) return;
-            // The site may advance as soon as the submit is accepted; CONFIRM_WORK is bound
-            // to the old task key and would reject. Inspect first instead of failing the run.
-            try { await this.action("CONFIRM_WORK"); } catch { /* page may have advanced */ }
-            snapshot = await this.inspect();
-            if (snapshot.taskKey !== this.bound.taskKey) { autoAdvanced = true; break; }
-            this.state.step = `已点击提交，等待站点确认（剩余 ${Math.max(0, Math.ceil((deadline - this.port.now()) / 1000))} 秒）`;
-          } while (!snapshot.completed && this.port.now() < deadline);
-          if (!snapshot.completed && !autoAdvanced) throw new Error("站点尚未确认提交成功；不会重复提交或跳到下一任务。");
+          const submission = await this.awaitSubmission(submitTaskKey, { interruptible: true });
+          if (!await this.checkpoint()) return;
+          if (submission.snapshot) snapshot = submission.snapshot;
+          if (submission.result === "advanced") autoAdvanced = true;
+          else if (submission.result !== "confirmed") throw new Error("站点尚未确认提交成功；不会重复提交或跳到下一任务。");
+          else submitDwell = true;
         } else if (!snapshot.completed && snapshot.kind === "VIDEO" && options.skipVideos) {
           this.state.step = "刷题模式：跳过视频任务，直接进入下一任务点";
         } else if (!snapshot.completed && snapshot.kind === "VIDEO") {
           this.state.step = "正常播放视频，等待实际播放结束及任务完成";
-          let popupPasses = 0;
-          // A restarted run may already be parked at a forced question. Playing first can
-          // exhaust all retries before the question gets a chance to release the player.
-          if (snapshot.video?.paused && !snapshot.video.ended) {
-            const popup = await this.enumPopup();
-            if (popup.found && !popup.resolved) throw new Error(`视频弹题自动作答未通过（已枚举 ${popup.attempts}/${popup.options} 个选项，弹题仍在），请人工处理后重新启动。`);
-            if (popup.resolved) popupPasses++;
+          if (options.allowVideoSeek) {
+            // 0.2.8 §3：站点允许拖动时定位到末尾触发站点自身完成判定；禁止/回退则完整播放。
+            const seek = await this.trySeekVideoCompletion(snapshot, options);
+            snapshot = seek.snapshot;
+            if (seek.outcome === "advanced") autoAdvanced = true;
+            else if (seek.outcome === "completed") this.state.videoStatus = "站点已确认完成";
+            else if (!snapshot.completed) snapshot = await this.playVideoToCompletion(snapshot);
+          } else {
+            snapshot = await this.playVideoToCompletion(snapshot);
           }
-          await this.playWithRetry();
-          snapshot = await this.inspect();
-          if (snapshot.taskKey !== this.bound.taskKey) throw new Error("播放期间任务已变化。");
-          this.state.videoStatus = this.videoStatusOf(snapshot.video);
-          let lastPlayAt = this.port.now();
-          let endedAt: number | null = null;
-          let lastTime = snapshot.video?.currentTime ?? 0;
-          let progressAt = this.port.now();
-          let seenPausedTime = this.pausedTime;
-          let videoDeadline = this.port.now() + Math.max(600000, Math.min(14400000, ((snapshot.video?.duration ?? 0) + 300) * 1000));
-          while (!snapshot.completed) {
-            if (!await this.delay(2500)) return;
-            snapshot = await this.inspect();
-            if (snapshot.taskKey !== this.bound.taskKey) throw new Error("播放期间任务已变化。");
-            if (snapshot.completed) break;
-            this.state.videoStatus = this.videoStatusOf(snapshot.video);
-            if (this.pausedTime !== seenPausedTime) {
-              videoDeadline += this.pausedTime - seenPausedTime;
-              seenPausedTime = this.pausedTime; progressAt = this.port.now();
-            }
-            if (!snapshot.video) throw new Error("监听发现播放器已移除，已停止。");
-            if (snapshot.video.paused && !snapshot.video.ended) {
-              // 站点弹题会暂停视频：先按 2026-10-19 授权免人工枚举作答（不调模型），再走恢复播放。
-              const popup = await this.enumPopup();
-              if (popup.found && popup.resolved) {
-                if (++popupPasses > 10) throw new Error("同一视频的弹题已连续自动作答超过 10 次，已停止，请人工检查。");
-                this.state.videoStatus = `视频弹题已自动作答（枚举第 ${popup.attempts} 个选项通过），等待视频继续`;
-                progressAt = this.port.now();
-                lastTime = snapshot.video.currentTime;
-                try { if (snapshot.video.paused) await this.playWithRetry(); } catch { /* 下一轮轮询继续恢复 */ }
-                continue;
-              }
-              if (popup.found) throw new Error(`视频弹题自动作答未通过（已枚举 ${popup.attempts}/${popup.options} 个选项，弹题仍在），请人工处理后重新启动。`);
-            }
-            if (snapshot.video.currentTime > lastTime || snapshot.completed || snapshot.video.ended) progressAt = this.port.now();
-            lastTime = snapshot.video.currentTime;
-            if (this.port.now() - progressAt > 60000) throw new Error(snapshot.video.error
-              ? "播放器错误持续超过 60 秒且没有播放进展，请检查课程页面或网络。"
-              : "视频超过 60 秒没有播放进展，请检查前台播放或网络要求。");
-            if (snapshot.video?.ended) endedAt ??= this.port.now();
-            if ((endedAt !== null && this.port.now() - endedAt > 60000) || this.port.now() > videoDeadline) {
-              throw new Error("视频播放后站点仍未确认任务完成，请人工检查；不会跳过任务。");
-            }
-            if (snapshot.video.paused && !snapshot.video.ended && this.port.now() - lastPlayAt >= 5000) {
-              // A brief network switch may pause/rebuffer several times. Use actual elapsed
-              // time without progress as the limit, rather than just three polling samples.
-              lastPlayAt = this.port.now();
-              try { await this.action("PLAY"); }
-              catch (error) { this.state.videoStatus = `正在恢复播放：${error instanceof Error ? error.message : "播放器暂未就绪"}`; }
-            }
-          }
-          this.state.videoStatus = "站点已确认完成";
         } else if (!snapshot.completed && snapshot.kind === "RESOURCE") {
           if (options.videosOnly) {
             this.state.step = "已打开 PPT/PDF 资料，继续寻找下一个非题目任务点（未确认完成的资料仅计越过）";
           } else {
             this.state.step = "已打开资料任务，等待站点确认完成";
             const deadline = this.port.now() + 60000;
+            const scrollAt = this.port.now() + 5000;
+            let scrolled = false;
             do {
               if (!await this.delay(1000)) return;
               snapshot = await this.inspect();
               if (snapshot.taskKey !== this.bound.taskKey) throw new Error("资料任务已变化。");
+              if (!snapshot.completed && options.allowMaterialScroll && !scrolled && this.port.now() >= scrollAt) {
+                // 0.2.8 §4：资料打开后仍未确认完成时，滚动到底促使站点自身完成判定（不伪造阅读时长）。
+                scrolled = true;
+                const result = await this.action("SCROLL_MATERIAL");
+                if (result.scroll?.scrolled) this.state.step = "已将 PPT/PDF 资料滚动到底，等待站点确认完成";
+              }
             } while (!snapshot.completed && this.port.now() < deadline);
             if (!snapshot.completed) throw new Error("站点尚未确认资料任务完成；可使用只刷课模式继续寻找非题目任务。");
           }
@@ -1141,29 +1412,36 @@ export class CourseRunner {
           continue;
         }
         const skippedVideo = options.skipVideos && snapshot.kind === "VIDEO" && !snapshot.completed;
-        const skippedQuiz = options.videosOnly && snapshot.kind === "QUIZ" && !snapshot.completed;
+        const skippedQuiz = discussionSkipped || !discussionHandled && options.videosOnly && (snapshot.kind === "QUIZ" || snapshot.kind === "DISCUSSION") && !snapshot.completed;
         const skippedResource = snapshot.kind === "MATERIAL" || options.videosOnly && snapshot.kind === "RESOURCE" && !snapshot.completed;
         if (skippedResource) this.state.skippedResources++;
         else if (skippedVideo) this.state.skippedVideos++;
         else if (skippedQuiz) this.state.skippedQuizzes++;
-        else this.state.completedTasks++;
+        else if (!discussionHandled || snapshot.completed) this.state.completedTasks++;
         if (!options.continueTasks) { this.state.phase = "DONE"; this.state.step = "当前章节刷题完成"; return; }
         if (!snapshot.hasNext) { this.state.phase = "DONE"; this.state.step = "已到最后一个任务"; return; }
+        if (submitDwell) {
+          // 2026-10-21 用户请求：提交被站点确认后先停留 2 秒再自动进入下一任务，留出复核/重做窗口。
+          this.state.step = "已提交并确认，停留 2 秒后进入下一任务（可复核或重做）";
+          if (!await this.delay(CourseRunner.SUBMIT_ADVANCE_DWELL_MS)) return;
+        }
         this.state.step = skippedResource ? "越过已识别的资料/图文卡片，寻找下一个非题目任务点" : "进入下一个任务";
         const previous = snapshot.taskKey;
         // 只有两种「故意越过未完成任务点」的 NEXT 才带页面侧跳过授权：刷题模式越过未完成视频、
         // 只刷课模式越过未完成题目；其余 NEXT 仍要求站点已确认完成或任务是无任务标记的资料页
         // （见 course-page 的 NEXT 守卫）。
-        await this.action("NEXT", (skippedVideo || skippedQuiz || skippedResource && snapshot.kind === "RESOURCE") ? { allowSkipUnfinished: true } : {});
+        await this.action("NEXT", (discussionHandled || skippedVideo || skippedQuiz || skippedResource && snapshot.kind === "RESOURCE") ? { allowSkipUnfinished: true } : {});
         const deadline = this.port.now() + 25000;
         let learnedRemaining = false;
+        let inspectFailures = 0;
         do {
           if (!await this.delay(1000)) return;
-          snapshot = await this.inspect();
+          try { snapshot = await this.inspect(); inspectFailures = 0; }
+          catch (error) { if (++inspectFailures > 8 || this.port.now() >= deadline) throw error; continue; }
           if (snapshot.taskKey === previous) {
             // A lazy quiz can appear while leaving a video on the same card. The old
             // video skip must not become permission to skip that newly discovered quiz.
-            const confirmSkip = (skippedVideo && snapshot.kind === "VIDEO") || (skippedQuiz && snapshot.kind === "QUIZ") ||
+            const confirmSkip = (discussionHandled && snapshot.kind === "DISCUSSION") || (skippedVideo && snapshot.kind === "VIDEO") || (skippedQuiz && (snapshot.kind === "QUIZ" || snapshot.kind === "DISCUSSION")) ||
               (skippedResource && snapshot.kind === "RESOURCE");
             const notice = await this.action("CONFIRM_NEXT", confirmSkip ? { allowSkipUnfinished: true } : {});
             if (notice.nextNotice === "LEARN_REMAINING") {

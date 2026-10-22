@@ -69,6 +69,30 @@ describe("course page adapter", () => {
     page = new CoursePage(document); snapshot = page.inspect();
     return modules;
   }
+  it.each([false, true])("confirms a mixed-card quiz dialog in its parent document, including inherited dialogs: %s", async inherited => {
+    const quiz = document.querySelector("#question1")!.cloneNode(true);
+    const modules = mixedCard(["work", "video"]);
+    const work = modules[0]!.doc; work.body.replaceChildren(quiz);
+    const submit = work.createElement("a"); submit.className = "btnSubmit"; submit.textContent = "Submit"; work.body.append(submit);
+    vi.spyOn(submit, "getClientRects").mockReturnValue([new DOMRect(0, 0, 100, 40)] as unknown as DOMRectList);
+    const dialog = document.createElement("div"); dialog.innerHTML = '<div>Tip</div><p>Submit?</p><button>Cancel</button><button>Submit</button>';
+    dialog.querySelectorAll("button")[1]!.addEventListener("click", () => { confirms++; modules[0]!.marker.setAttribute("aria-label", "任务点已完成"); });
+    submit.addEventListener("click", () => { sends++; document.body.append(dialog); });
+    if (inherited) document.body.append(dialog);
+    snapshot = page.inspect();
+    expect(await page.handle(command("ADOPT_EXISTING", { index: 0 }))).toMatchObject({ ok: true, existingAccepted: true });
+    expect((await page.handle(command("SEND_WORK"))).ok).toBe(true);
+    expect((await page.handle(command("CONFIRM_WORK"))).ok).toBe(true);
+    expect(confirms).toBe(1); expect(sends).toBe(inherited ? 0 : 1);
+    expect(page.inspect().completed).toBe(true);
+    await page.handle(command("CONFIRM_WORK")); expect(confirms).toBe(1);
+  });
+  it("rechecks answers before confirming an inherited submission dialog", async () => {
+    await filled(); await page.handle(command("SEND_WORK"));
+    document.querySelector<HTMLInputElement>("#answer1")!.value = "B";
+    expect((await page.handle(command("CONFIRM_WORK"))).ok).toBe(false);
+    expect(confirms).toBe(0);
+  });
   it("completes a video independently of its sibling quiz, then skips that quiz only with authorization", async () => {
     const modules = mixedCard(["video", "work"]);
     expect(snapshot).toMatchObject({ kind: "VIDEO", completed: false, questionCount: 0 });
@@ -143,6 +167,70 @@ describe("course page adapter", () => {
     expect(page.inspect().kind).toBe("QUIZ");
     expect(modules[0]!.marker.getAttribute("aria-label")).toBe("任务点未完成");
     expect(next).toBe(0);
+  });
+  it("SEEK_TAIL positions a ready, seekable video to just before its end", async () => {
+    const { video } = videoPage();
+    let current = 0;
+    Object.defineProperty(video, "currentTime", { configurable: true, get: () => current, set: (value: number) => { current = value; } });
+    Object.defineProperty(video, "seekable", { configurable: true, get: () => ({ length: 1, start: () => 0, end: () => 60 }) });
+    vi.spyOn(video, "readyState", "get").mockReturnValue(1);
+    vi.spyOn(video, "duration", "get").mockReturnValue(60);
+    expect(page.inspect().kind).toBe("VIDEO");
+    const result = await page.handle(command("SEEK_TAIL"));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.seek).toMatchObject({ seekable: true, applied: true, currentTime: 58, duration: 60 });
+    expect(current).toBe(58);
+  });
+  it("SEEK_TAIL reports not-seekable when the player exposes no seekable range", async () => {
+    const { video } = videoPage();
+    Object.defineProperty(video, "seekable", { configurable: true, get: () => ({ length: 0, start: () => 0, end: () => 0 }) });
+    vi.spyOn(video, "readyState", "get").mockReturnValue(1);
+    vi.spyOn(video, "duration", "get").mockReturnValue(60);
+    const result = await page.handle(command("SEEK_TAIL"));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.seek).toMatchObject({ seekable: false, applied: false });
+  });
+  it("rejects SEEK_TAIL when the bound task is not a video", async () => {
+    expect(page.inspect().kind).toBe("QUIZ");
+    expect((await page.handle(command("SEEK_TAIL"))).ok).toBe(false);
+  });
+  it("PLAY_FROM_START rewinds the video to zero and plays it through", async () => {
+    const { video } = videoPage();
+    let current = 58;
+    Object.defineProperty(video, "currentTime", { configurable: true, get: () => current, set: (value: number) => { current = value; } });
+    vi.spyOn(video, "paused", "get").mockReturnValue(true);
+    const play = vi.spyOn(video, "play").mockResolvedValue();
+    expect((await page.handle(command("PLAY_FROM_START"))).ok).toBe(true);
+    expect(current).toBe(0);
+    expect(play).toHaveBeenCalled();
+  });
+  it("SCROLL_MATERIAL honestly reports no scrollable container on the material frame", async () => {
+    mixedCard(["pdf", "work"]);
+    expect(snapshot.kind).toBe("RESOURCE");
+    const result = await page.handle(command("SCROLL_MATERIAL"));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.scroll).toMatchObject({ containerFound: false, scrolled: false, reachedBottom: false });
+  });
+  it("SCROLL_MATERIAL scrolls a stubbed container toward the bottom in paced steps", async () => {
+    vi.useFakeTimers();
+    try {
+      const modules = mixedCard(["pdf", "work"]);
+      const container: { scrollHeight: number; clientHeight: number; scrollTop: number; scrollTo: (x: number, y: number) => void } =
+        { scrollHeight: 1000, clientHeight: 200, scrollTop: 0, scrollTo: (_x, y) => { container.scrollTop = y; } };
+      Object.defineProperty(modules[0]!.doc, "scrollingElement", { configurable: true, get: () => container });
+      const pending = page.handle(command("SCROLL_MATERIAL"));
+      await vi.advanceTimersByTimeAsync(3000);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.scroll).toMatchObject({ containerFound: true, scrolled: true, reachedBottom: true, steps: 5 });
+      expect(container.scrollTop).toBe(800);
+    } finally { vi.useRealTimers(); }
+  });
+  it("rejects SCROLL_MATERIAL on a video task", async () => {
+    const { video } = videoPage();
+    vi.spyOn(video, "paused", "get").mockReturnValue(true);
+    expect(page.inspect().kind).toBe("VIDEO");
+    expect((await page.handle(command("SCROLL_MATERIAL"))).ok).toBe(false);
   });
   it("does not treat an unknown or unloaded document module as a skippable resource", async () => {
     const modules = mixedCard(["unknown", "work"]);
@@ -599,6 +687,51 @@ describe("course page adapter", () => {
     expect((await page.handle(command("CONFIRM_WORK"))).ok).toBe(true);
     expect(confirms).toBe(0);
   });
+  it("confirms a submit dialog the site renders in the parent document outside the task iframe", async () => {
+    // Real-site shape: the quiz is a nested same-origin module iframe, but the "Tip / Submit?"
+    // confirmation is drawn in the TOP document, so CONFIRM_WORK must climb ancestors to find it.
+    document.body.innerHTML = '<div id="prevNextFocusNext">Next</div>';
+    document.querySelector("#prevNextFocusNext")!.addEventListener("click", () => { next++; });
+    const wrapper = document.createElement("div"); wrapper.className = "ans-attach-ct";
+    const marker = document.createElement("div"); marker.className = "ans-job-icon";
+    marker.setAttribute("aria-label", "任务点未完成");
+    const frame = document.createElement("iframe"); frame.src = "/ananas/modules/work/index.html";
+    wrapper.append(marker, frame); document.body.append(wrapper);
+    const idoc = frame.contentDocument!;
+    idoc.open();
+    idoc.write('<body><div id="question1"><div class="TiMu"><div class="Zy_TItle"><span class="newZy_TItle">【Single Choice】</span>Q</div>' +
+      '<ul class="Zy_ulTop"><li><span class="num_option" data="A">A</span></li><li><span class="num_option" data="B">B</span></li></ul>' +
+      '<input type="hidden" id="answer1" value="B"></div></div><a class="btnSubmit">Submit</a></body>');
+    idoc.close();
+    vi.spyOn(idoc, "readyState", "get").mockReturnValue("complete");
+    const iwin = idoc.defaultView!;
+    vi.spyOn(iwin.HTMLElement.prototype, "getClientRects").mockReturnValue([new DOMRect(0, 0, 100, 40)] as unknown as DOMRectList);
+    for (const option of idoc.querySelectorAll<HTMLElement>(".num_option")) {
+      option.addEventListener("click", () => { (idoc.querySelector("#answer1") as HTMLInputElement).value = option.getAttribute("data")!; });
+    }
+    idoc.querySelector(".btnSubmit")!.addEventListener("click", () => {
+      sends += 1;
+      const dialog = document.createElement("div");
+      dialog.innerHTML = '<div>Tip</div><div>Submit?</div><button type="button">Cancel</button><button type="button" id="parentConfirm">Submit</button>';
+      dialog.querySelector("#parentConfirm")!.addEventListener("click", () => { confirms += 1; });
+      document.body.append(dialog);
+    });
+    page = new CoursePage(document); snapshot = page.inspect();
+    expect(snapshot.kind).toBe("QUIZ");
+    const captured = await page.handle(command("CAPTURE", { index: 0 }));
+    expect(captured.ok).toBe(true);
+    const applied = await page.handle(command("APPLY", { index: 0, fingerprint: captured.captured!.fingerprint,
+      answer: { status: "ANSWERED", selectedOptionIds: ["opt_1"], blankAnswers: [], textAnswer: null, explanation: "", caveats: [] } }));
+    expect(applied.ok).toBe(true);
+    expect((await page.handle(command("SEND_WORK"))).ok).toBe(true);
+    expect(sends).toBe(1);
+    expect((await page.handle(command("CONFIRM_WORK"))).ok).toBe(true);
+    expect(confirms).toBe(1);
+    // Never re-click the underlying submit for the same task.
+    expect((await page.handle(command("CONFIRM_WORK"))).ok).toBe(true);
+    expect(sends).toBe(1);
+    expect(confirms).toBe(1);
+  });
   it("switches a single-choice answer once and verifies the site-bound value", async () => {
     await filled();
     expect(document.querySelector<HTMLInputElement>("#answer1")!.value).toBe("A");
@@ -817,6 +950,7 @@ describe("course page adapter", () => {
     const inner = outer.contentDocument!.createElement("iframe");
     inner.src = "/mooc-ans/knowledge/cards?num=0";
     outer.contentDocument!.body.append(inner);
+    vi.spyOn(inner, "getClientRects").mockReturnValue([new DOMRect(0, 0, 100, 40)] as unknown as DOMRectList);
     const first = page.inspect().taskKey;
     inner.src = "/mooc-ans/knowledge/cards?num=1";
     expect(page.inspect().taskKey).not.toBe(first);
@@ -1414,5 +1548,132 @@ describe("course page adapter", () => {
     const captured = await page.handle(command("CAPTURE", { index: 0 }));
     if (!captured.ok || !captured.captured) throw new Error("capture failed");
     expect(captured.captured.question.options).toHaveLength(0);
+  });
+
+  function sectionTabPage(activeIndex = 0, wire = true): void {
+    const labels = ["1学习内容", "2讨论", "3教学课件", "4教学视频", "5评估测试"];
+    document.body.innerHTML = `<ul class="prev_ul" role="tablist">` +
+      labels.map((label, i) => `<li id="dct${i + 1}" role="option" class="${i === activeIndex ? "active" : "c" + (i + 1)}">${label}</li>`).join("") +
+      `</ul><iframe id="iframe" src="/mooc-ans/knowledge/cards?courseid=1&knowledgeid=1&num=${activeIndex}"></iframe>`;
+    const iframe = document.querySelector<HTMLIFrameElement>("#iframe")!;
+    const loadCard = () => {
+      const doc = iframe.contentDocument!;
+      doc.open(); doc.write('<body><div id="pageDiv" class="ans-cc">Static content</div></body>'); doc.close();
+      vi.spyOn(doc, "readyState", "get").mockReturnValue("complete");
+      vi.spyOn(doc.querySelector("#pageDiv")!, "getClientRects").mockReturnValue([new DOMRect(0, 0, 100, 40)] as unknown as DOMRectList);
+    };
+    loadCard();
+    const lis = [...document.querySelectorAll<HTMLElement>("ul.prev_ul li")];
+    if (wire) lis.forEach((li, idx) => {
+      li.addEventListener("click", () => {
+        lis.forEach((x, xi) => { x.className = xi === idx ? "active" : `c${xi + 1}`; });
+        iframe.setAttribute("src", `/mooc-ans/knowledge/cards?courseid=1&knowledgeid=1&num=${idx}`);
+        loadCard();
+      });
+    });
+    page = new CoursePage(document); snapshot = page.inspect();
+  }
+
+  it("SWITCH_SECTION_TAB activates the 讨论 tab and confirms the section loaded", async () => {
+    sectionTabPage(0);
+    const result = await page.handle(command("SWITCH_SECTION_TAB", { sectionIndex: 2 }));
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.section).toMatchObject({
+      tabs: 5, requested: 2, activeIndex: 1, confirmed: true, loadedNum: 1, activeLabel: "讨论" });
+  });
+
+  it("NEXT traverses horizontal sections before using the chapter Next control", async () => {
+    sectionTabPage(0);
+    document.body.insertAdjacentHTML("beforeend", '<button id="prevNextFocusNext">Next</button>');
+    const chapterNext = vi.fn(); document.querySelector("#prevNextFocusNext")!.addEventListener("click", chapterNext);
+    for (let index = 1; index < 5; index++) {
+      snapshot = page.inspect();
+      expect(snapshot).toMatchObject({ kind: "MATERIAL", hasNext: true, completed: false });
+      const previous = snapshot.taskKey;
+      expect(await page.handle(command("NEXT"))).toMatchObject({ ok: true, section: { requested: index + 1, confirmed: true } });
+      expect(page.inspect().taskKey).not.toBe(previous);
+      expect(chapterNext).not.toHaveBeenCalled();
+    }
+    snapshot = page.inspect();
+    expect((await page.handle(command("NEXT"))).ok).toBe(true);
+    expect(chapterNext).toHaveBeenCalledOnce();
+  });
+
+  it("does not leave an unfinished module for a later horizontal section", async () => {
+    sectionTabPage(0);
+    const doc = document.querySelector<HTMLIFrameElement>("#iframe")!.contentDocument!;
+    doc.body.insertAdjacentHTML("beforeend", '<div class="ans-job-icon" aria-label="任务点未完成"></div>');
+    snapshot = page.inspect();
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    expect(document.querySelector("li.active")!.id).toBe("dct1");
+  });
+
+  it("preserves the active module and its task key when sibling wrappers reorder", async () => {
+    const modules = mixedCard(["work", "video"]);
+    const key = snapshot.taskKey;
+    document.body.insertBefore(modules[1]!.marker.closest(".ans-attach-ct")!, modules[0]!.marker.closest(".ans-attach-ct")!);
+    expect(page.inspect()).toMatchObject({ taskKey: key, kind: "QUIZ", questionCount: 1 });
+  });
+
+  it("returns only the observed discussion destination without firing a page popup", async () => {
+    const modules = mixedCard(["insertbbs", "work"]);
+    const frame = modules[0]!.doc.createElement("iframe"); frame.src = "/mooc-ans/bbscircle/chapter";
+    modules[0]!.doc.body.append(frame);
+    const doc = frame.contentDocument!;
+    doc.open(); doc.write('<body><div id="topicMainDiv" class="PublicCardBox" onclick="openTopicUrl()">Discussion</div></body>'); doc.close();
+    const open = vi.fn(); doc.querySelector("#topicMainDiv")!.addEventListener("click", open);
+    const destination = "https://groupweb.chaoxing.com/course/topic/v3/bbs/topic/thread/replysList?courseId=1&classId=2";
+    doc.querySelector("#topicMainDiv")!.setAttribute("data", destination);
+    Object.assign(doc.defaultView!, { openTopicUrl: () => undefined });
+    vi.spyOn(doc.querySelector("#topicMainDiv")!, "getClientRects").mockReturnValue([new DOMRect(0, 0, 100, 40)] as unknown as DOMRectList);
+    snapshot = page.inspect(); expect(snapshot.kind).toBe("DISCUSSION");
+    expect((await page.handle(command("NEXT"))).ok).toBe(false);
+    expect(await page.handle(command("OPEN_DISCUSSION"))).toMatchObject({ ok: true, discussionUrl: destination });
+    expect(open).not.toHaveBeenCalled();
+    doc.querySelector("#topicMainDiv")!.setAttribute("data", "javascript:alert(1)");
+    expect((await page.handle(command("OPEN_DISCUSSION"))).ok).toBe(false);
+    expect(open).not.toHaveBeenCalled();
+    expect(next).toBe(0); expect(sends).toBe(0);
+  });
+
+  it("keeps valid siblings when a marked module has an unknown shape, then blocks that unknown module", async () => {
+    const modules = mixedCard(["work", "video"]);
+    modules[1]!.marker.closest(".ans-attach-ct")!.append(document.createElement("iframe"));
+    expect(page.inspect()).toMatchObject({ taskKey: snapshot.taskKey, kind: "QUIZ", diagnostics: { modules: 2, anomalies: 1 } });
+    modules[0]!.marker.setAttribute("aria-label", "任务点已完成");
+    expect((await page.handle(command("NEXT"))).ok).toBe(true);
+    snapshot = page.inspect();
+    expect(snapshot.kind).toBe("UNKNOWN");
+    expect((await page.handle(command("NEXT", { allowSkipUnfinished: true }))).ok).toBe(false);
+  });
+
+  it("accepts the observed finished wrapper class when the aria label is stale", () => {
+    const modules = mixedCard(["work", "video"]);
+    modules[0]!.marker.closest(".ans-attach-ct")!.classList.add("ans-job-finished");
+    expect(page.inspect().completed).toBe(true);
+  });
+
+  it("SWITCH_SECTION_TAB fails when no section index is supplied", async () => {
+    sectionTabPage(0);
+    expect((await page.handle(command("SWITCH_SECTION_TAB"))).ok).toBe(false);
+  });
+
+  it("SWITCH_SECTION_TAB reports not-confirmed when the site never moves the tab", async () => {
+    vi.useFakeTimers();
+    try {
+      sectionTabPage(0, false);
+      const pending = page.handle(command("SWITCH_SECTION_TAB", { sectionIndex: 3 }));
+      await vi.advanceTimersByTimeAsync(200 * 32);
+      const result = await pending;
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.section).toMatchObject({ confirmed: false, requested: 3, activeIndex: 0, loadedNum: 0 });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("refuses SWITCH_SECTION_TAB on the standalone work page", async () => {
+    document.body.dataset.automationWork = "true";
+    page = new CoursePage(document); snapshot = page.inspect();
+    expect(snapshot.standalone).toBe(true);
+    expect((await page.handle(command("SWITCH_SECTION_TAB", { sectionIndex: 2 }))).ok).toBe(false);
   });
 });

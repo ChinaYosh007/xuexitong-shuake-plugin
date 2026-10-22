@@ -1,11 +1,13 @@
 import { CoursePage } from "./course-page";
 import { parseAutomationCommand } from "./protocol";
+import { DiscussionPage } from "./discussion-page";
+import { isDiscussionPageUrl } from "../shared/pages";
 
 const key = "__studyCourseAutomationV1";
 const scope = window as unknown as Record<string, unknown>;
 if (!scope[key]) {
   scope[key] = true;
-  const page = new CoursePage(document);
+  const page = isDiscussionPageUrl(location.href) ? new DiscussionPage(document) : new CoursePage(document);
   chrome.runtime.onMessage.addListener((message: unknown, sender, respond) => {
     if (sender.id !== chrome.runtime.id || typeof message !== "object" || message === null) return false;
     // Lightweight probe used by the background worker to avoid re-injecting this large file on

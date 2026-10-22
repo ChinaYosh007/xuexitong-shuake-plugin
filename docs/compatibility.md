@@ -240,6 +240,65 @@ Read-only Java-course evidence: each `.ans-attach-ct` marked module contains one
 
 真实 Java 课程只读取证：`.ans-attach-ct` 中各有一个 `.ans-job-icon` 和 iframe，视频额外含 `videoContainer`，完成模块含 `ans-job-finished`；video/work使用上述固定路径。同卡片视频完成而测验未完成，与截图一致。现按模块分别绑定任务键、选择播放/读题作用域及完成标记，站点Next前先处理同卡片后续模块。PPT/PDF只复用既有PDF路径；未取得任意其他PPT皮肤证据。完整行为、用户授权、验证和限制见 [0.2.7记录](course-playback-0.2.7.md)。
 
+### 6.10 视频定位末尾与资料滚动到底（2026-10-21，0.2.8 M1，仅标准媒体/DOM 原语，不新增选择器）
+
+用户授权「站点允许拖动时定位到末尾触发站点自身完成判定」「PPT/PDF 滚动到底促使站点完成，不伪造阅读时长」。本批**不猜测任何学习通专有选择器**（硬约束 §11），只用标准媒体与 DOM 几何：
+
+| 原语 | 实现 | 边界与证据 |
+|---|---|---|
+| `SEEK_TAIL` | 只读 `video.duration/readyState/seekable.end()`，写 `video.currentTime = min(duration,seekable末) − 2s`；不派发合成鼠标/指针事件、不伪造 `ended`/`timeupdate`、不改站点完成标记；不可定位/未就绪返回 `applied:false` 交回完整播放 | 合成单测断言 applied→写末尾、length:0 拒绝、短片段拒绝、非视频任务拒绝；**真站是否允许拖动 Unverified**，运行器仅在播放位置≤10s 时试探，进度回退>3s 判 `denied` 并 `PLAY_FROM_START` 完整播放，可拖性按课程缓存 |
+| `PLAY_FROM_START` | 写 `video.currentTime = 0` 后走既有 `startVideo` 静音起播链路 | 合成单测断言回卷到 0 并播放；仅作为拖动被拒后的回退 |
+| `SCROLL_MATERIAL` | 容器只取 `doc.scrollingElement`（可滚范围>8），否则 `body` 内 `div/section/main/article` 中 `overflow-y:auto/scroll` 且可滚范围最大者；5 步 ~350ms 节奏 `scrollTo(0, max·i/5)` | 只用标准 `scrollTo/scrollTop/scrollHeight/clientHeight`，不点翻页控件、不改站点状态、不伪造阅读时长；合成单测断言无容器不滚、节奏 5 步到 `scrollTop≈800`、视频任务拒绝；跨域/不可滚框架如实上报不猜。**真站滚动是否触发完成 Unverified** |
+
+三种命令完成证据仍是站点 `.ans-job-icon`（`ans-job-finished`）变绿；`allowVideoSeek`/`allowMaterialScroll` 为运行页默认开、可关的授权开关，关闭时行为与 0.2.7 完全一致。验证与限制见验收 §9.40。
+
+### 6.11 章节横向标签栏与讨论入口（2026-10-21，0.2.8 M1，同源结构证据 + 跨源缺口如实记录）
+
+2026-10-21 用户在真实课程页（`mooc1.chaoxing.com/mycourse/studentstudy`）截图指出章节顶部有一排横向标签，希望「这种横向的」「讨论题也走题目那套、能填就填」。本批落地**同源横向标签导航**，并如实标注**跨源讨论回帖**尚未实现。脱敏结构证据：
+
+| 结构 | 真实观察（只读取证，无题文/URL/标识） | 适配处理 |
+|---|---|---|
+| 标签栏 | `ul.prev_ul` 内 `li#dct1..dct5`，`role=option`；当前项 class 含 `active`，其余为 `c1..c5`；每项 inline `onclick=changeDisplayContent(num,total,chapterId,courseId,clazzid,…)` | `sectionTabItems` 只取 `ul.prev_ul li`；不猜其它皮肤 |
+| 分区映射 | 站点自身 `changeDisplayContent` 把内容 `#iframe` 的 src 改写为 `/mooc-ans/knowledge/cards?…&num=(tab−1)`：1 学习内容→num=0、2 讨论→num=1、3 教学课件→num=2、4 教学视频→num=3、5 评估测试→num=4 | `SWITCH_SECTION_TAB` 点击 `li#dct{tab}` 触发站点导航，再轮询（≤30×~200ms）等 `active` 类落到该页且 `#iframe` 卡片 `num==tab−1`；两者都成立才 `confirmed:true` |
+| 安全边界 | 标签只是同源分区切换，不涉及提交/跨源 | 缺 `sectionIndex` 或独立作业页直接拒绝；越界(0/6)、非整数、其它动作携带的 `sectionIndex` 由 `parseAutomationCommand` 丢弃；`confirmed:false` 时运行器停止，不假定分区可达；切换后清空在途流水线，真正任务内容以之后 INSPECT 为准 |
+
+**同源部分**：`SWITCH_SECTION_TAB` 已在 protocol + `CoursePage` 实现并有合成单测（讨论页签确认 `activeIndex:1/loadedNum:1/activeLabel:"讨论"`、缺序号失败、站点未移动 `confirmed:false`、工作页拒绝、解析越界丢弃）。**真站标签切换与运行器自动遍历各分区仍 Unverified**——本批未把该动作接入 `runLoop` 的自动推进，只完成可被调用的适配与取证。
+
+**跨源缺口（如实记录，未实现）**：讨论**主题的回帖页**开在 `groupweb.chaoxing.com/…/replysList`，是**独立标签、独立源**（上一会话取证：题干 `.topicDetail_replyTitle`、回帖 `.replyEdit textarea`、发表 `div.replyBtn`、回复列表 `.topicDetail_replyList`）。要实现「按题目管线读题→AI→回填→发表→核验回帖出现」，须先：①在真站重取一份 replysList 脱敏 DOM 证据（本批目标章节无讨论主题、回帖标签已关闭，取证不完整，绝不凭记忆造选择器）；②新增 `https://groupweb.chaoxing.com/*` 可选 host 权限；③给仅绑定单一 tabId 的运行器加上跨标签命令路由。三者齐备前，讨论自动回帖不落地、不发布。验证与限制见验收 §9.41。
+
+### 6.12 横向遍历与独立讨论草稿（2026-10-21，本轮真实只读取证）
+
+2026-10-21 最初实现只填讨论草稿；2026-10-22 用户明确要求所有模式自动提交，并选择包括自动发表讨论，覆盖原草稿限制。现完整回读后单次提交/发表，等待实际结果，再继续原课程；只刷课仅提交已有完整答案或草稿，不生成缺答。
+
+| 结构 | 本轮真实观察（不保存页面 HTML、题文、课程 ID 或完整 URL） | 适配 |
+|---|---|---|
+| 讨论入口 | cards 内 `/ananas/modules/insertbbs/index.html`，再嵌套 `iframe#frame_content` 指向 `/mooc-ans/bbscircle/chapter`；唯一可见 `#topicMainDiv.PublicCardBox[onclick="openTopicUrl()"]`，其 `data` 属性含完整目标地址（2026-10-21 用户失败页重新取证） | `OPEN_DISCUSSION` 读取并核验此目标；后台通过 `chrome.tabs.create` 直接打开，不依赖网页弹窗 |
+| 独立页面 | HTTPS `groupweb.chaoxing.com/course/topic/v3/bbs/{topic}/{thread}/replysList`，带 courseId/classId | 仅匹配此主机和路径；新标签必须属于相同课程/班级；不接管已有标签或任意当前激活标签 |
+| 原题 | `#bbsTopicDetail .topicDetail_title > span` 标题；`#bbsTopicDetail .topicDetail_main .replyContent` 正文 | 只读原题，排除教师信息、同学回复和输入框；图片渲染复用该已确认正文根 |
+| 回复框 | `.replyEdit .textareawrap textarea`，真实页面唯一、可见、非只读、非禁用 | 原生 value setter + input/change/blur；400ms 后核对题干指纹、控件身份与完整值；不覆盖已有不同草稿 |
+| 发表控件与结果 | 回复区唯一可见 `.replyEdit .addReply`；真站浏览器工具单次点击用户已有草稿后，`.topicDetail_replyList` 新增有 id 的直接子项 `.topicDetail_replyItem`，含匹配的可见 `.replyContent`，回复框清空 | 完整回读后单次点击；必须同时见到新匹配项与原输入框清空才确认发表，不点击顶部 `.replyBtn`，不把发表当作站点任务点变绿 |
+| 标签绑定 | 旧实现点击后按 `openerTabId` 寻找弹窗，用户真站反馈未找到新标签；不能确认当次是弹窗拦截还是归属丢失 | 改为只跟踪 `tabs.create` 返回的确切 ID；创建前与加载完成后均核实精确主机、路径、课程班级；不查找或接管其他标签 |
+
+生产 manifest 的必选权限与可选权限声明不变；讨论站点在运行页由用户点击单独申请精确 Origin，未授权即停止。浏览器集成测试的两个 HTTPS Origin 仅加在临时复制的测试 manifest 中，所有页面本地合成拦截，绝不修改生产权限。
+
+本轮还将 NEXT 接入「同卡片模块优先→后续可见 dct1..dct5 页签→站点 Next」；有未完成任务则保留原跳转守卫。模块重排按 DOM marker 身份保持当前任务；单个模块结构异常只阻塞该未知模块，不清空正常兄弟模块。卡片身份优先使用主 #iframe 的 num/knowledgeid；切换时等待新文档加载，不能只见 src 改变就处理旧内容。完成类 `ans-job-finished` 支持已有真实证据中的绿色标记。
+
+实际真站仅完成结构取证及浏览器工具填入一份未发表示例；新版扩展重载后的整课自动运行仍 **Unverified**。本轮验证与已知边界见 [检查报告](project-audit-2026-10-21.md)。
+
+2026-10-22 补充：浏览器工具已发表一条用户已有草稿并观察到上述结果，未保存题文、回复、用户标识到仓库。新版扩展完整真实课程仍未执行。提交确认搜索修复为当前任务文档及其同源祖先文档（有界至根文档）；底层提交按钮仍限定任务文档，不扫描兄弟任务的确认框。重启时已有确认框也须先逐题 ADOPT_EXISTING/回读核验，再确认，不再次点击底层提交。
+
+### 6.13 提交确认弹框渲染在父文档（2026-10-21，0.2.8 M1，用户真实截图取证）
+
+用户真实课程页截图显示：章节测验的题目与站点「Submit」按钮位于嵌套任务 iframe（`/ananas/modules/work/index.html`）内，而点击提交后站点弹出的「Tip / Submit? / Cancel / Submit」确认框渲染在**顶层文档**，覆盖整个视口（含右侧 Content/Discussion 侧栏）。旧 `CONFIRM_WORK` 只在 `taskDocuments()`（任务帧子树）内找确认框，父文档的框被漏检，导致提交无法确认、表现为「没有自动点击提交」。
+
+| 结构 | 真实观察（不保存页面 HTML、题文、课程 ID 或完整 URL） | 适配 |
+|---|---|---|
+| 提交按钮 | 任务帧内唯一站点提交控件（`a.btnSubmit` 或精确文案可见控件） | `SEND_WORK` 的提交按钮唯一性搜索**限定 `taskDocuments()`**，父页其它 Submit 不进入候选 |
+| 确认弹框 | 顶层文档内一个小可见容器：含 `Submit?` 问句（`/[?？]/`＋`/submit/i`）＋恰好一个确认＋一个取消 | `submissionDocuments()` 从任务帧经 `frameElement.ownerDocument` **向上遍历至顶层（≤6 层）**，`CONFIRM_WORK` 在任务帧＋各祖先文档一并查找；仍受「唯一确认框」守卫约束 |
+| 未作答告警 | 「还有 N 题未作答，确定提交吗？」类文案 | `genericConfirmButton` 明确排除，交回人工，不自动点确认（守「绝不提交缺题」） |
+
+该提交路径为所有解答题目的模式共用（刷题、刷课、自动运行、独立作业/测验页）；**只刷课模式**按既有授权仍跳过题目、不提交，未改语义。单次提交、不重复点、完成只认站点绿标等硬约束不变。新增跨 realm 回归单测复现「题在子帧、框在父文档」并断言各恰好点一次。真站 Chrome 中父文档框被自动点下的实机观察仍 **Unverified**。
+
 ## 7 权限、消息与存储边界
 
 | 项目 | 实现 |

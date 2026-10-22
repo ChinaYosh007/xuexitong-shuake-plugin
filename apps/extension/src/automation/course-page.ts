@@ -1,5 +1,5 @@
 import type { StudyAnswer, StudyQuestion, QuestionType } from "@study/contracts";
-import type { AnswerMode, AutomationCommand, AutomationResponse, PopupOutcome, TaskQuestion, TaskSnapshot } from "./protocol";
+import type { AnswerMode, AutomationCommand, AutomationResponse, PopupOutcome, ScrollOutcome, SeekOutcome, SectionTabsOutcome, TaskDiagnostics, TaskKind, TaskQuestion, TaskSnapshot } from "./protocol";
 import { renderQuestion, extractOriginalImages } from "./render-question";
 import { sha256Hex } from "../shared/sha256";
 import { chooseAnswer } from "./consensus";
@@ -27,16 +27,17 @@ export function accessibleDocuments(root: Document, depth = 0, result: Document[
  * 只接受这一条已确认的路径，其余页面仍按未知页面拒绝；正式考试路径另有单独拒绝。
  * 判定与侧边栏路由共用 `shared/pages.ts`，本模块继续导出以兼容既有测试。
  */
-import { isCourseTaskPath, isExamPath, isWorkPagePath } from "../shared/pages";
+import { isCourseTaskPath, isDiscussionPageUrl, isExamPath, isWorkPagePath } from "../shared/pages";
 export { isExamPath, isWorkPagePath };
 
-/** Card ordinal of the currently open knowledge card. The site keeps it in the
- * cards iframe's "num" query parameter; nested frames are visited after their parent,
- * so the deepest card frame wins when several frames expose a value. */
+/** Prefer the observed active #iframe; hidden retained frames cannot override it. */
 function cardIndexOf(root: Document): string {
+  const primary = loadedCardsNum(root);
+  if (primary !== null) return String(primary);
   let index = "0";
   for (const doc of accessibleDocuments(root)) {
     for (const frame of doc.querySelectorAll("iframe")) {
+      if (!visible(frame)) continue;
       const source = frame.getAttribute("src");
       if (!source) continue;
       let num: string | null = null;
@@ -59,9 +60,10 @@ function cardIndexOf(root: Document): string {
 }
 
 function markerCompleted(marker: Element): boolean {
-  return /任务点已完成|Task\s*completed/i.test(marker.getAttribute("aria-label") ?? "");
+  return /任务点已完成|Task\s*completed/i.test(marker.getAttribute("aria-label") ?? "") ||
+    marker.closest(".ans-attach-ct")?.classList.contains("ans-job-finished") === true;
 }
-interface CourseModule { marker: Element; root: Document | null; kind: "VIDEO" | "QUIZ" | "RESOURCE" | "UNKNOWN"; }
+interface CourseModule { marker: Element; root: Document | null; kind: "VIDEO" | "QUIZ" | "RESOURCE" | "DISCUSSION" | "UNKNOWN"; }
 /** Live Java course evidence: each marked .ans-attach-ct wraps exactly one module iframe.
  * Keep completion scoped to that wrapper, not to unrelated quizzes on the same card. */
 function courseModules(docs: Document[]): CourseModule[] {
@@ -72,7 +74,13 @@ function courseModules(docs: Document[]): CourseModule[] {
     const frames = wrapper?.querySelectorAll<HTMLIFrameElement>("iframe");
     // Legacy/synthetic single-task layouts keep their existing adapter. Mixed unknown
     // layouts never acquire a permission to skip merely because their content is empty.
-    if (!wrapper || wrapper.querySelectorAll(".ans-job-icon").length !== 1 || frames?.length !== 1) return [];
+    if (!wrapper || wrapper.querySelectorAll(".ans-job-icon").length !== 1 || frames?.length !== 1) {
+      // Preserve valid siblings, but keep malformed marked content as a blocking unknown task.
+      // A legacy layout with no wrappers at all still uses the whole-card adapter.
+      if (markers.every(item => !item.closest(".ans-attach-ct"))) return [];
+      modules.push({ marker, root: null, kind: "UNKNOWN" });
+      continue;
+    }
     const frame = frames[0]!;
     let path = "";
     try { path = new URL(frame.getAttribute("src") ?? "", marker.ownerDocument.location.href).pathname; } catch { /* Unknown module. */ }
@@ -80,7 +88,8 @@ function courseModules(docs: Document[]): CourseModule[] {
     try { root = frame.contentDocument; } catch { /* No cross-origin access. */ }
     const kind = path === "/ananas/modules/video/index.html" ? "VIDEO"
       : path === "/ananas/modules/work/index.html" ? "QUIZ"
-      : path === "/ananas/modules/pdf/index.html" ? "RESOURCE" : "UNKNOWN";
+      : path === "/ananas/modules/pdf/index.html" ? "RESOURCE"
+      : path === "/ananas/modules/insertbbs/index.html" ? "DISCUSSION" : "UNKNOWN";
     modules.push({ marker, root, kind });
   }
   return modules;
@@ -103,6 +112,12 @@ function staticContentCard(doc: Document): boolean {
   const images = [...content.querySelectorAll("img")];
   if (images.some(image => !image.complete || image.naturalWidth === 0)) return false;
   return Boolean(content.textContent?.trim() || images.length);
+}
+
+function discussionEntries(docs: Document[]): HTMLElement[] {
+  return docs.filter(doc => doc.location.pathname === "/mooc-ans/bbscircle/chapter")
+    .flatMap(doc => [...doc.querySelectorAll<HTMLElement>('#topicMainDiv.PublicCardBox[onclick="openTopicUrl()"]')])
+    .filter(visible);
 }
 
 /** The site player only attaches its source after its own play button is clicked. */
@@ -219,6 +234,84 @@ async function startVideo(video: HTMLVideoElement): Promise<void> {
 }
 
 /**
+ * Position a site video to its tail to prompt the site's OWN completion check (0.2.8 §3,
+ * 2026-10-21 用户授权：站点允许拖动时定位到末尾). This is a pure, structural media primitive:
+ * it only reads standard properties (duration/readyState/seekable) and writes
+ * `video.currentTime` — it never dispatches synthetic mouse/pointer events, never fabricates
+ * `ended` or `timeupdate`, and never touches the site's completion markers. When the media is
+ * not ready or not seekable it reports `applied:false` and the runner falls back to full
+ * playback. The caller (runner) decides when to probe and watches for the site's green mark.
+ */
+function seekToTail(video: HTMLVideoElement, tailLeadSeconds = 2): SeekOutcome {
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
+  const seekable = typeof video.seekable?.length === "number" ? video.seekable : null;
+  const round = (value: number): number => Math.round(value * 10) / 10;
+  if (!seekable || seekable.length === 0 || video.readyState < 1 || !(duration > 0)) {
+    return { seekable: false, applied: false, currentTime: round(video.currentTime || 0),
+      duration: round(duration), reason: "播放器尚未就绪或不支持定位" };
+  }
+  const end = Math.min(duration, seekable.end(seekable.length - 1));
+  const target = Math.max(0, end - Math.max(0, tailLeadSeconds));
+  if (target <= 0) {
+    return { seekable: true, applied: false, currentTime: round(video.currentTime || 0),
+      duration: round(duration), reason: "视频过短或末尾位置不可定位，无需拖动" };
+  }
+  try { video.currentTime = target; }
+  catch { return { seekable: true, applied: false, currentTime: round(video.currentTime || 0), duration: round(duration), reason: "定位被播放器拒绝" }; }
+  return { seekable: true, applied: true, currentTime: round(video.currentTime || target), duration: round(duration), reason: "" };
+}
+
+/**
+ * Structurally find the scroll container inside a material document (0.2.8 §4.2, 不猜类名).
+ * Prefer the document's own scrollingElement; otherwise take the largest layout element whose
+ * overflow-y actually scrolls. Uses only standard DOM geometry — no site-specific selectors.
+ */
+function findScrollContainer(doc: Document): Element | null {
+  const scrollableRange = (el: Element): number => el.scrollHeight - el.clientHeight;
+  const scrolling = doc.scrollingElement;
+  if (scrolling && scrollableRange(scrolling) > 8) return scrolling;
+  const view = doc.defaultView;
+  let best: Element | null = null;
+  for (const el of [...(doc.body?.querySelectorAll("div,section,main,article") ?? [])]) {
+    if (scrollableRange(el) <= 8) continue;
+    const style = view?.getComputedStyle(el);
+    if (!style || !/(auto|scroll)/.test(style.overflowY)) continue;
+    if (!best || scrollableRange(el) > scrollableRange(best)) best = el;
+  }
+  return best;
+}
+
+/**
+ * Scroll an opened PDF/PPT material module toward its bottom to prompt the site's own
+ * completion (0.2.8 §4). Reads in 5 paced steps (~350ms apart) so it resembles a learner
+ * scrolling rather than an instant jump; uses only standard scrollTop/scrollTo, never clicks
+ * page-turn controls or mutates site state, and never fabricates reading time — the runner
+ * still waits for the site's green mark. Cross-origin or non-scrollable frames are reported,
+ * not guessed at.
+ */
+async function scrollMaterialToBottom(docs: Document[]): Promise<ScrollOutcome> {
+  let containerFound = false, scrolled = false, reachedBottom = false, steps = 0;
+  for (const doc of docs) {
+    let container: Element | null;
+    try { container = findScrollContainer(doc); }
+    catch { container = null; }
+    if (!container) continue;
+    containerFound = true;
+    const max = container.scrollHeight - container.clientHeight;
+    if (max <= 8) { reachedBottom = true; continue; }
+    for (let i = 1; i <= 5; i++) {
+      try { container.scrollTo(0, Math.round((max * i) / 5)); } catch { /* some jsdom frames reject scrollTo */ }
+      steps++;
+      await delay(350);
+    }
+    scrolled = true;
+    reachedBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 8;
+    if (reachedBottom) break;
+  }
+  return { containerFound, scrolled, reachedBottom, steps };
+}
+
+/**
  * Some course pages use <a href="javascript:..."> as a visual placeholder and bind
  * their real handler with addEventListener. Letting the default action run makes the
  * browser report a CSP violation ("Running the JavaScript URL violates...") and can
@@ -243,6 +336,102 @@ function siteClick(element: HTMLElement): void {
       }, 0);
     }
   }
+}
+
+/**
+ * 横向标签栏证据（compatibility §6.11，2026-10-21 用户授权处理横向标签）。章节内容页顶部
+ * `ul.prev_ul` 内含 `li#dct1..dct5`（`role=option`），当前项 class 含 "active"，其余为 "c1..c5"。
+ * 每项的 inline `onclick=changeDisplayContent(num,…)` 是站点自身的分区导航：它把内容 `#iframe`
+ * 的 src 改写为 `/mooc-ans/knowledge/cards?…&num=(num-1)`（1 学习内容→num=0、2 讨论→num=1、
+ * 3 教学课件→num=2、4 教学视频→num=3、5 评估测试→num=4）。这些分区是同源页面内的标签切换，
+ * 不涉及跨源、不点击提交、不伪造完成——真正的任务内容仍以之后 INSPECT 的站点结构为准。
+ */
+function sectionTabItems(root: Document): HTMLElement[] {
+  const bar = root.querySelector<HTMLElement>("ul.prev_ul");
+  return bar ? [...bar.querySelectorAll<HTMLElement>("li")].filter(li => /^dct[1-5]$/.test(li.id)) : [];
+}
+
+function nextSectionIndex(root: Document): number | null {
+  const items = sectionTabItems(root);
+  const active = items[activeSectionIndex(items)];
+  if (!active) return null;
+  const target = items.find(li => Number(li.id.slice(3)) > Number(active.id.slice(3)) && visible(li) &&
+    li.getAttribute("aria-disabled") !== "true" && !li.classList.contains("disable"));
+  return target ? Number(target.id.slice(3)) : null;
+}
+
+function activeSectionIndex(items: HTMLElement[]): number {
+  return items.findIndex(li => (li.className || "").split(/\s+/).includes("active"));
+}
+
+/** The content iframe's current cards `num`, or null when it is not a cards frame / unreadable. */
+function loadedCardsNum(root: Document): number | null {
+  const src = root.querySelector<HTMLIFrameElement>("#iframe")?.getAttribute("src");
+  if (!src) return null;
+  let num: string | null = null;
+  try {
+    const url = new URL(src, root.location.href);
+    if (url.pathname !== "/mooc-ans/knowledge/cards") return null;
+    num = url.searchParams.get("num");
+  } catch {
+    if (/^\/mooc-ans\/knowledge\/cards\?/.test(src)) num = /[?&]num=(\d+)/.exec(src)?.[1] ?? null;
+  }
+  if (num === null) num = /[?&]num=(\d+)/.exec(src)?.[1] ?? null;
+  return num !== null && /^\d+$/.test(num) ? Number(num) : null;
+}
+
+function cardsLoading(root: Document): boolean {
+  const frame = root.querySelector<HTMLIFrameElement>("#iframe");
+  const expected = loadedCardsNum(root);
+  if (!frame || expected === null) return false;
+  try {
+    const doc = frame.contentDocument;
+    return !doc?.body || doc.readyState === "loading" || doc.location.pathname !== "/mooc-ans/knowledge/cards" ||
+      new URLSearchParams(doc.location.search).get("num") !== String(expected);
+  } catch { return true; }
+}
+
+/** A short generic section title from the site's own tab chrome, with the leading index digit
+ * stripped and capped. Only structural chrome text ("讨论"/"教学视频"), never a course name. */
+function sectionLabel(li: HTMLElement | undefined): string {
+  if (!li) return "";
+  return (li.textContent || "").replace(/\d+/, "").trim().slice(0, 12);
+}
+
+/**
+ * Drive one horizontal tab switch through the site's own tab bar and confirm it moved. Clicks
+ * `li#dct{index}` (firing `changeDisplayContent`), then polls (bounded) for the active class to
+ * land on that tab AND the content iframe's cards `num` to equal `index-1`. Returns structural
+ * counts only; `confirmed=false` when the site never moved, so the runner stops instead of
+ * assuming a section became reachable. No completion is inferred here.
+ */
+async function switchSectionTab(root: Document, sectionIndex: number): Promise<SectionTabsOutcome> {
+  const items = sectionTabItems(root);
+  const tabs = items.length;
+  const requested = sectionIndex;
+  const expectedNum = sectionIndex - 1;
+  const target = items.find(li => li.id === `dct${sectionIndex}`);
+  if (!target) {
+    const activeIndex = activeSectionIndex(items);
+    return { tabs, requested, activeIndex, confirmed: false, loadedNum: loadedCardsNum(root),
+      activeLabel: sectionLabel(items[activeIndex]) };
+  }
+  if (!visible(target) || target.getAttribute("aria-disabled") === "true" || target.classList.contains("disable")) {
+    return { tabs, requested, activeIndex: activeSectionIndex(items), confirmed: false, loadedNum: loadedCardsNum(root), activeLabel: "" };
+  }
+  target.click();
+  let activeIndex = activeSectionIndex(items);
+  let loadedNum = loadedCardsNum(root);
+  for (let attempt = 0; attempt < 30; attempt++) {
+    activeIndex = activeSectionIndex(items);
+    loadedNum = loadedCardsNum(root);
+    if (items[activeIndex]?.id === target.id && loadedNum === expectedNum && !cardsLoading(root)) break;
+    await delay(200);
+  }
+  activeIndex = activeSectionIndex(items);
+  loadedNum = loadedCardsNum(root);
+  const confirmed = items[activeIndex]?.id === target.id && loadedNum === expectedNum && !cardsLoading(root);
+  return { tabs, requested, activeIndex, confirmed, loadedNum, activeLabel: sectionLabel(items[activeIndex]) };
 }
 
 /** Two retained site notice skins, verified from the course DOM (compatibility §6.7).
@@ -859,6 +1048,81 @@ function applyType(el: HTMLElement, answer: StudyAnswer, override?: StudyQuestio
 }
 
 /** A session belongs to one top-level document. Element references and answers stay in that document. */
+/**
+ * 0.2.8 §8 D1: build a fully redacted diagnostic snapshot (structure counts and short enum
+ * values only — never question text, answer, URL, HTML or a course identifier) so a failing
+ * machine can paste one safe line for analysis. It must never throw: any DOM surprise yields a
+ * best-effort object, and an all-zero baseline is returned on a hard failure.
+ */
+function buildDiagnostics(args: {
+  docs: Document[]; markers: Element[]; module?: CourseModule; moduleCount: number; activeModule: number;
+  kind: TaskKind; video: HTMLVideoElement | null; videos: HTMLVideoElement[]; pdfPresent: boolean; root: Document;
+}): TaskDiagnostics {
+  const zero: TaskDiagnostics = {
+    documents: 0, iframes: 0, cardsFrames: 0, cardNumPresent: false, modules: 0, moduleKind: "none", activeModule: -1,
+    anomalies: 0, markerTotal: 0, markerCompleted: 0, markerUnreadable: 0, videoCount: 0, videoReadyState: 0,
+    videoSeekable: 0, currentTime: 0, duration: 0, ended: false, paused: false, pdfReady: false,
+    scrollableCandidates: -1, submitCandidates: -1
+  };
+  try {
+    let iframes = 0; let cardsFrames = 0; let cardNumPresent = false;
+    for (const doc of args.docs) {
+      for (const frame of [...doc.querySelectorAll("iframe")]) {
+        iframes += 1;
+        const source = frame.getAttribute("src") ?? "";
+        let isCards = false; let num: string | null = null;
+        try { const url = new URL(source, doc.location.href); isCards = url.pathname === "/mooc-ans/knowledge/cards"; num = url.searchParams.get("num"); }
+        catch { isCards = /^\/mooc-ans\/knowledge\/cards\?/.test(source); }
+        if (isCards) {
+          cardsFrames += 1;
+          if (num === null || !/^\d+$/.test(num)) { const raw = /[?&]num=(\d+)/.exec(source); num = raw?.[1] ?? null; }
+          if (num !== null && /^\d+$/.test(num)) cardNumPresent = true;
+        }
+      }
+    }
+    let anomalies = 0;
+    for (const marker of args.markers) {
+      const wrapper = marker.closest(".ans-attach-ct");
+      const frames = wrapper?.querySelectorAll("iframe");
+      if (!wrapper || wrapper.querySelectorAll(".ans-job-icon").length !== 1 || frames?.length !== 1) anomalies += 1;
+    }
+    const markerCompletedCount = args.markers.filter(marker => markerCompleted(marker)).length;
+    const markerUnreadable = args.markers.filter(marker => marker.getAttribute("aria-label") === null).length;
+    const video = args.video;
+    // Heavy scans are sampled selectively to keep the every-2.5s video poll cheap.
+    let scrollableCandidates = -1;
+    if (args.pdfPresent) {
+      scrollableCandidates = 0;
+      const scope = args.module?.root ? accessibleDocuments(args.module.root) : [args.root];
+      for (const doc of scope.slice(0, 40)) {
+        for (const el of [...doc.querySelectorAll("*")].slice(0, 4000)) {
+          const html = el as HTMLElement;
+          if (html.scrollHeight - html.clientHeight > 8) scrollableCandidates += 1;
+        }
+      }
+    }
+    let submitCandidates = -1;
+    if (args.kind !== "VIDEO") {
+      submitCandidates = submitSearchDocuments(args.module?.root ?? args.root).flatMap(submitControls).length;
+    }
+    const pdfDoc = args.docs.find(doc => doc.location.pathname === "/ananas/modules/pdf/index.html");
+    return {
+      documents: args.docs.length, iframes, cardsFrames, cardNumPresent,
+      modules: args.moduleCount,
+      moduleKind: args.module?.kind ?? "none", activeModule: args.activeModule, anomalies,
+      markerTotal: args.markers.length, markerCompleted: markerCompletedCount, markerUnreadable,
+      videoCount: args.videos.length, videoReadyState: video?.readyState ?? 0,
+      videoSeekable: typeof video?.seekable?.length === "number" ? video.seekable.length : 0,
+      currentTime: video ? Math.round((video.currentTime || 0) * 10) / 10 : 0,
+      duration: video && Number.isFinite(video.duration) ? Math.round(video.duration * 10) / 10 : 0,
+      ended: video?.ended ?? false, paused: video?.paused ?? false,
+      pdfReady: pdfDoc?.readyState === "complete", scrollableCandidates, submitCandidates
+    };
+  } catch {
+    return zero;
+  }
+}
+
 export class CoursePage {
   private owner: string | null = null;
   private leaseAt = 0;
@@ -870,8 +1134,11 @@ export class CoursePage {
   private priorTaskKey = "";
   private priorCardKey = "";
   private activeModule: number | null = null;
+  private activeMarker: Element | null = null;
+  private moduleIds = new WeakMap<Element, number>();
+  private moduleSequence = 0;
   private modules: CourseModule[] = [];
-  private skippedModules = new Set<number>();
+  private skippedModules = new Set<Element>();
   private moduleRoot: Document | null | undefined;
   private startedVideos = new WeakSet<HTMLVideoElement>();
   constructor(private readonly root: Document) {}
@@ -879,16 +1146,37 @@ export class CoursePage {
   private taskDocuments(): Document[] {
     return this.moduleRoot === null ? [] : accessibleDocuments(this.moduleRoot ?? this.root);
   }
+  /** A task may place its submit dialog in an ancestor document, outside its iframe. */
+  private submissionDocuments(): Document[] {
+    const docs = this.taskDocuments();
+    let current: Document | null = this.moduleRoot ?? this.root;
+    for (let depth = 0; current && current !== this.root && depth < 6; depth++) {
+      let parent: Document | undefined;
+      try { parent = current.defaultView?.frameElement?.ownerDocument; } catch { break; }
+      if (!parent) break;
+      current = parent;
+      if (!docs.includes(current)) docs.push(current);
+    }
+    return docs;
+  }
+  private verifyApplied(): void {
+    const questions = questionElements(this.work());
+    if (!questions.length || this.applied.size !== questions.length) fail("尚未完整回填本任务，拒绝提交。");
+    questions.forEach((el, i) => {
+      const entry = this.applied.get(i);
+      if (!entry || fingerprint(el) !== entry.fingerprint || answerDigest(readAnswer(el, entry.question)) !== entry.answer) fail("提交前回读不一致，已停止。");
+    });
+  }
   private taskVideo(): HTMLVideoElement | null {
     return this.moduleRoot === null ? null : currentVideo(this.moduleRoot ?? this.root);
   }
   private nextModule(): number {
     return this.modules.findIndex((module, index) => index !== this.activeModule &&
-      !this.skippedModules.has(index) && !markerCompleted(module.marker));
+      !this.skippedModules.has(module.marker) && !markerCompleted(module.marker));
   }
   private authorizedModuleSkips(): boolean {
     return this.skippedModules.size > 0 && this.nextModule() < 0 &&
-      this.modules.every((module, index) => markerCompleted(module.marker) || this.skippedModules.has(index));
+      this.modules.every(module => markerCompleted(module.marker) || this.skippedModules.has(module.marker));
   }
 
   inspect(): TaskSnapshot {
@@ -919,23 +1207,39 @@ export class CoursePage {
       // 完成证据：明确的“已提交/查看答案”结果视图；或本页已点击提交且**作答视图已消失**
       // （题面与提交控件都不再出现）。仅隐藏提交按钮而题目仍在，不算完成（可能是提交中）。
       const completed = submittedCue(docs) || (this.sendAttempted && submit.length === 0 && elements.length === 0);
-      return { courseKey, taskKey, kind: completed ? "COMPLETED" : elements.length ? "QUIZ" : "UNKNOWN",
-        completed, questionCount: elements.length, hasNext: false, video: null, standalone: true };
+      const kind: TaskKind = completed ? "COMPLETED" : elements.length ? "QUIZ" : "UNKNOWN";
+      const diagnostics = buildDiagnostics({ docs, markers: docs.flatMap(doc => [...doc.querySelectorAll(".ans-job-icon")]),
+        module: undefined, moduleCount: 0, activeModule: -1, kind, video: null, videos: videoCandidates(this.root),
+        pdfPresent: false, root: this.root });
+      return { courseKey, taskKey, kind,
+        completed, questionCount: elements.length, hasNext: false, video: null, standalone: true, diagnostics };
     }
     const cardIndex = cardIndexOf(this.root);
     const courseKey = sha256Hex(`${params.get("courseId") ?? params.get("courseid") ?? "fixture"}|${params.get("clazzid") ?? ""}`);
-    const cardKey = sha256Hex(`${courseKey}|${params.get("chapterId") ?? this.root.body.dataset.taskId ?? "current"}|${cardIndex}`);
+    let chapter = params.get("chapterId") ?? this.root.body.dataset.taskId ?? "current";
+    const primarySource = this.root.querySelector<HTMLIFrameElement>("#iframe")?.getAttribute("src");
+    if (primarySource && loadedCardsNum(this.root) !== null) {
+      try { chapter = new URL(primarySource, this.root.location.href).searchParams.get("knowledgeid") ?? chapter; } catch { /* Legacy frame URL. */ }
+    }
+    const cardKey = sha256Hex(`${courseKey}|${chapter}|${cardIndex}`);
     if (cardKey !== this.priorCardKey) {
-      this.activeModule = null; this.skippedModules.clear(); this.priorCardKey = cardKey;
+      this.activeModule = null; this.activeMarker = null; this.skippedModules.clear(); this.priorCardKey = cardKey;
+    }
+    if (cardsLoading(this.root)) {
+      return { courseKey, taskKey: cardKey, kind: "UNKNOWN", completed: false, questionCount: 0, hasNext: false, video: null };
     }
     this.modules = courseModules(docs);
+    this.activeModule = this.activeMarker ? this.modules.findIndex(module => module.marker === this.activeMarker) : null;
+    if (this.activeModule === -1) this.activeModule = null;
     if (this.modules.length && this.activeModule === null) {
       const pending = this.modules.findIndex(module => !markerCompleted(module.marker));
       this.activeModule = pending < 0 ? 0 : pending;
     }
     const module = this.activeModule === null ? undefined : this.modules[this.activeModule];
+    this.activeMarker = module?.marker ?? null;
+    if (module && !this.moduleIds.has(module.marker)) this.moduleIds.set(module.marker, ++this.moduleSequence);
     this.moduleRoot = module ? module.root : undefined;
-    const taskKey = module ? sha256Hex(`${cardKey}|module:${this.activeModule}`) : cardKey;
+    const taskKey = module ? sha256Hex(`${cardKey}|module:${this.moduleIds.get(module.marker)}`) : cardKey;
     if (taskKey !== this.priorTaskKey) {
       this.applied.clear(); this.sendAttempted = false; this.confirmAttempted = false;
       this.priorTaskKey = taskKey;
@@ -953,12 +1257,19 @@ export class CoursePage {
     const resource = module?.kind === "RESOURCE" && taskDocs.some(doc =>
       doc.location.pathname === "/ananas/modules/pdf/index.html" && doc.readyState === "complete");
     const next = this.root.querySelector<HTMLElement>("#prevNextFocusNext");
-    const hasNext = this.nextModule() >= 0 || Boolean(next && visible(next) && !next.classList.contains("disable") && next.getAttribute("aria-disabled") !== "true");
-    return { courseKey, taskKey, kind: completed ? "COMPLETED" : work || module?.kind === "QUIZ" ? "QUIZ" : video ? "VIDEO"
-      : resource ? "RESOURCE" : material ? "MATERIAL" : "UNKNOWN",
+    const hasNext = this.nextModule() >= 0 || nextSectionIndex(this.root) !== null ||
+      Boolean(next && visible(next) && !next.classList.contains("disable") && next.getAttribute("aria-disabled") !== "true");
+    const kind: TaskKind = completed ? "COMPLETED" : work || module?.kind === "QUIZ" ? "QUIZ" : video ? "VIDEO"
+      : discussionEntries(taskDocs).length === 1 ? "DISCUSSION"
+      : resource ? "RESOURCE" : material ? "MATERIAL" : "UNKNOWN";
+    const diagnostics = buildDiagnostics({ docs, markers, module, moduleCount: this.modules.length,
+      activeModule: this.activeModule ?? -1, kind, video, videos: videoCandidates(this.root),
+      pdfPresent: docs.some(doc => doc.location.pathname === "/ananas/modules/pdf/index.html"), root: this.root });
+    return { courseKey, taskKey, kind,
       completed, questionCount: work ? questionElements(work).length : 0, hasNext,
       video: video ? { paused: video.paused, ended: video.ended, currentTime: video.currentTime,
-        duration: Number.isFinite(video.duration) ? video.duration : 0, error: video.error !== null } : null };
+        duration: Number.isFinite(video.duration) ? video.duration : 0, error: video.error !== null } : null,
+      diagnostics };
   }
 
   private work(): Document { return this.taskDocuments().find(doc => questionElements(doc).length) ?? fail("题目文档已变化。"); }
@@ -1214,7 +1525,7 @@ export class CoursePage {
         // A task change may cancel a pipeline. Its owner must still be able to release
         // the old lease, without touching a newly navigated task's media controls.
         this.owner = null; this.leaseAt = 0; this.confirmedNextControl = null;
-        this.activeModule = null; this.skippedModules.clear();
+        this.activeModule = null; this.activeMarker = null; this.skippedModules.clear();
         this.startedVideos = new WeakSet<HTMLVideoElement>();
         return { ok: true };
       }
@@ -1235,29 +1546,31 @@ export class CoursePage {
       if (command.action === "APPLY") { await this.apply(command.index!, command.fingerprint!, command.answer!, command.questionType); return { ok: true }; }
       if (command.action === "SEND_WORK") {
         if (this.sendAttempted) fail("此任务已尝试提交，不自动重复提交。");
-        const questions = questionElements(this.work());
-        if (!questions.length || this.applied.size !== questions.length) fail("尚未完整回填本任务，拒绝提交。");
-        questions.forEach((el, i) => {
-          const entry = this.applied.get(i);
-          if (!entry || fingerprint(el) !== entry.fingerprint || answerDigest(readAnswer(el, entry.question)) !== entry.answer) fail("提交前回读不一致，已停止。");
-        });
-        const documents = submitSearchDocuments(this.moduleRoot ?? this.root);
-        const buttons = [...new Set(documents.flatMap(submitControls))];
-        if (buttons.length !== 1) fail(`无法唯一确认站点提交按钮（候选 ${buttons.length} 个，已搜索 ${documents.length} 个同源文档）。`);
+        this.verifyApplied();
+        const taskDocs = this.taskDocuments();
+        // A restarted run can inherit an already-open confirmation. The site may render that
+        // dialog in an ancestor page outside the task iframe, so adopt it (searching ancestors)
+        // only after complete answer verification, without re-clicking the underlying submit.
+        if (this.submissionDocuments().some(doc => confirmButton(doc))) { this.sendAttempted = true; return { ok: true }; }
+        // The real submit control lives in the task frame; keep the uniqueness search scoped to
+        // task documents so an unrelated Submit in the parent page can never widen the candidate set.
+        const buttons = [...new Set(taskDocs.flatMap(submitControls))];
+        if (buttons.length !== 1) fail(`无法唯一确认站点提交按钮（候选 ${buttons.length} 个，已搜索 ${taskDocs.length} 个同源文档）。`);
         this.sendAttempted = true;
         siteClick(buttons[0]!);
       } else if (command.action === "CONFIRM_WORK") {
         if (!this.sendAttempted || this.confirmAttempted) return { ok: true };
-        for (const doc of this.taskDocuments()) {
-          const button = confirmButton(doc);
-          if (!button) continue;
+        const buttons = [...new Set(this.submissionDocuments().map(confirmButton).filter((button): button is HTMLElement => Boolean(button)))];
+        if (buttons.length > 1) fail("提交确认框不唯一，已停止。");
+        const button = buttons[0];
+        if (button) {
+          this.verifyApplied();
           this.confirmAttempted = true;
           siteClick(button);
-          break;
         }
       } else if (command.action === "CONFIRM_NEXT") {
         const skip = this.authorizedModuleSkips() && snapshot.completed || command.allowSkipUnfinished === true &&
-          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE");
+          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE" || snapshot.kind === "DISCUSSION");
         const button = nextNoticeControl(this.root, skip);
         if (!button) { this.confirmedNextControl = null; return { ok: true }; }
         if (button === this.confirmedNextControl) return { ok: true };
@@ -1269,23 +1582,67 @@ export class CoursePage {
         // unfinished VIDEO behind; 只刷课模式 leaves a QUIZ or an opened PDF/PPT RESOURCE
         // behind. Unknown/unloaded modules still block the jump.
         const skipUnfinished = command.allowSkipUnfinished === true &&
-          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE");
+          (snapshot.kind === "VIDEO" || snapshot.kind === "QUIZ" || snapshot.kind === "RESOURCE" || snapshot.kind === "DISCUSSION");
         if (!snapshot.completed && snapshot.kind !== "MATERIAL" && !skipUnfinished) fail("站点尚未确认本任务完成，拒绝跳转。");
         if (this.activeModule !== null && this.modules[this.activeModule]) {
-          if (skipUnfinished && !snapshot.completed) this.skippedModules.add(this.activeModule);
+          if (skipUnfinished && !snapshot.completed) this.skippedModules.add(this.modules[this.activeModule]!.marker);
           const upcoming = this.nextModule();
           if (upcoming >= 0) {
             this.taskVideo()?.pause();
-            this.popupGeneration++; this.activeModule = upcoming;
+            this.popupGeneration++; this.activeModule = upcoming; this.activeMarker = this.modules[upcoming]!.marker;
             return { ok: true };
           }
+        }
+        const sectionIndex = nextSectionIndex(this.root);
+        if (sectionIndex !== null) {
+          this.taskVideo()?.pause();
+          this.popupGeneration++;
+          const section = await switchSectionTab(this.root, sectionIndex);
+          if (!section.confirmed) fail("横向标签切换未得到站点确认，已停止。");
+          return { ok: true, section };
         }
         const next = this.root.querySelector<HTMLElement>("#prevNextFocusNext");
         if (!snapshot.hasNext || !next) fail("没有可用的下一个任务。");
         this.confirmedNextControl = null;
         siteClick(next);
+      } else if (command.action === "OPEN_DISCUSSION") {
+        if (snapshot.kind !== "DISCUSSION") fail("当前不是已适配的讨论入口。");
+        const entries = discussionEntries(this.taskDocuments());
+        if (entries.length !== 1) fail("无法唯一确认讨论入口。");
+        // The real entry exposes its destination in `data`. Return it to the trusted
+        // background instead of relying on an ungestured window.open and popup discovery.
+        const discussionUrl = entries[0]!.getAttribute("data") ?? "";
+        if (!isDiscussionPageUrl(discussionUrl)) fail("讨论入口缺少已适配的目标地址。");
+        return { ok: true, discussionUrl };
       } else if (command.action === "ENUM_POPUP") {
         return { ok: true, popup: await this.enumVideoPopup(command) };
+      } else if (command.action === "SEEK_TAIL") {
+        if (snapshot.kind !== "VIDEO") fail("当前任务不是视频，无法定位到末尾。");
+        const video = this.taskVideo();
+        if (!video) fail("页面上没有可操作的播放器。");
+        return { ok: true, seek: seekToTail(video) };
+      } else if (command.action === "PLAY_FROM_START") {
+        if (snapshot.kind !== "VIDEO") fail("当前任务不是视频，无法从头播放。");
+        const video = this.taskVideo();
+        if (!video) fail("页面上没有可操作的播放器。");
+        this.popupGeneration++;
+        try { video.currentTime = 0; } catch { /* 播放器拒绝定位时仍继续完整播放 */ }
+        await startVideo(video);
+      } else if (command.action === "SCROLL_MATERIAL") {
+        if (snapshot.kind !== "RESOURCE") fail("当前任务不是已打开的资料页，无法滚动。");
+        return { ok: true, scroll: await scrollMaterialToBottom(this.taskDocuments()) };
+      } else if (command.action === "SWITCH_SECTION_TAB") {
+        if (typeof command.sectionIndex !== "number") fail("缺少要切换的横向标签序号。");
+        if (snapshot.standalone === true) fail("独立作业页没有章节横向标签栏。");
+        if ((!snapshot.completed && snapshot.kind !== "MATERIAL") || this.nextModule() >= 0) fail("当前卡片仍有未处理任务，拒绝切换横向标签。");
+        const section = await switchSectionTab(this.root, command.sectionIndex);
+        // The active knowledge card changes with the tab, so drop any in-flight per-task pipeline;
+        // the next INSPECT recomputes cardKey/activeModule from the newly loaded section. We never
+        // claim success when the site did not move the tab — the runner stops on confirmed=false.
+        this.popupGeneration++;
+        this.applied.clear(); this.sendAttempted = false; this.confirmAttempted = false;
+        this.priorTaskKey = ""; this.priorCardKey = "";
+        return { ok: true, section };
       } else if (command.action === "PLAY" || command.action === "PAUSE_VIDEO") {
         const video = this.taskVideo();
         if (!video) fail("页面上没有可操作的播放器。");

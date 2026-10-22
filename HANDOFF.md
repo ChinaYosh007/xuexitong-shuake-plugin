@@ -385,3 +385,21 @@ The chat's working directory initially pointed to an empty folder. Work and veri
 User clarified automatic traversal of non-question tasks (video/PPT), after a real completed Java video stalled beside an unfinished quiz. course-page now queues observed .ans-attach-ct modules separately, scopes read/play/submit to the active module, keeps completed/explicitly-skipped modules distinct, and handles same-card NEXT before chapter NEXT. Earlier explicit skips survive into chapter-notice confirmation. Native video end remains required for a video started by the run, even after an early 90% completion marker.
 
 用户最新要求与边界已记AGENTS：只刷课模式现在为「视频和资料，跳过题目」，已适配且打开的PDF/PPT转换资料可越过、未确认不计完成。无新增权限或依赖；未知/未加载模块仍停止。新版本0.2.7已本地构建打包，454单测、类型/构建、5项最终MV3回归、8发布测试、11契约测试及契约检查通过，ZIP16条目逐文件校验一致。真实0.2.7重载执行及其他PPT皮肤未验证；不得把合成测试称作真实站点已通过。见docs/course-playback-0.2.7.md、compatibility6.9与验收9.38。未提交、推送或公开发布。
+
+## 2026-10-21 / Navigation audit and new-page discussion draft
+
+NEXT now traverses modules → horizontal tabs → chapter Next. Stable marker identity, malformed sibling blocking, loaded-card checks and bounded read recovery address navigation gaps. Dispatched mutations are not replayed after response loss. A course-bound cross-origin discussion handoff fills and verifies a draft in a uniquely attributed new tab; no publication or completion count. See docs/project-audit-2026-10-21.md, acceptance §9.43 and compatibility §6.12.
+
+已补齐同页模块→横向页签→章节遍历、模块身份与加载判定。讨论准确可选域权限需用户点击「授权讨论页面」授予；新页面只填草稿，已有草稿保留，不发表、不计完成。真站浏览器工具已填一条示例草稿，但新版扩展整课仍未验证。495 单测、37 MV3 浏览器、22 fixture、8 发布、11 契约单测、契约检查、类型与构建全部通过；本地 ZIP 17 条目核验通过。保留原有未提交修改，未提交/推送/升版本/公开发布，本地仍标 v0.2.7。使用前重载扩展并刷新课程，关闭旧调度页。
+
+Follow-up: the real user hit popup-discovery timeout. The observed entry's `data` URL is now read and validated, then the background creates and navigates an exact tab ID; no page popup or opener discovery. Source/destination course binding and optional host grant remain. Full unit suite: 500 passed; final bridge: 11 passed; discussion MV3 with broken page popup handler passed. Final results and limits: acceptance §9.44. Rebuilt real-user execution remains unverified; browser URL policy blocks extension-page control.
+
+后续修复：用户真站反馈找不到新讨论标签，现改为读取入口 data 地址，准确核验后后台创建标签并导航返回 ID，移除网页弹窗与 opener 查找。仍只填草稿。结果与限制见验收 §9.44，需重载扩展并新开调度页。
+
+## 2026-10-22 / Automatic submission in every mode, including discussions
+
+The user explicitly included discussion publication, superseding draft-only behavior. Confirmation searches active task documents plus ancestors; inherited confirmations are adopted only after full answer verification. Videos-only submits complete existing answers/drafts without generating missing answers. Discussion publication is single-shot, verified by a new matching reply plus cleared editor, then returns to the same course; publication and green-task counters remain separate. Completed-run actions cannot resubmit or recount. Read docs/auto-submit-2026-10-22.md and acceptance §9.46 for final results and limits.
+
+最新明确授权覆盖仅草稿限制：所有模式提交完整已核验答案/讨论，包含二次确认；只刷课不生成缺答。最终真实整课仍未验证，真站仅浏览器工具发表过一条现有草稿用于取证。保留原有本地改动；未推送、升版本或公开发布，仍标 v0.2.7。重载扩展、刷新课程并新开调度页后使用。
+
+最终 Verified：513 单测、42 MV3 浏览器回归（3.5m，含三模式测验确认与讨论发表返回课程）、类型与构建、diff check、本地 ZIP 17 条目 CRC/逐文件一致。最终包 SHA-256 `42592736c911b08cf80063451a44b7237a1a9124177df29056721f4451044ccd`。原有 §9.45 是先前补丁记录，当前模式语义及边界以 §9.46 和最新 AGENTS 授权为准。

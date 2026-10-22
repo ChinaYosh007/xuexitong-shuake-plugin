@@ -145,11 +145,12 @@ describe("rendering and network boundaries", () => {
     }
   });
 
-  it("names remote origins only in provider presets and the public update feed", () => {
+  it("names remote origins only in provider presets, the verified discussion route and public update feed", () => {
     const remote = Object.entries(sources).filter(([, text]) =>
       /https?:\/\/(?!127\.0\.0\.1|localhost)[a-z0-9.-]+/i.test(text)
     );
-    expect(remote.map(([path]) => relativeKey(path))).toEqual(["local/provider.ts", "updates/updates.ts"]);
+    expect(remote.map(([path]) => relativeKey(path))).toEqual(["local/provider.ts", "shared/pages.ts", "updates/updates.ts"]);
+    expect(sourceOf("shared/pages.ts").match(/https?:\/\/[^"\s]+/g)).toEqual(["https://groupweb.chaoxing.com"]);
     const updateUrls = sourceOf("updates/updates.ts").match(/https?:\/\/[^"\s]+/g);
     expect(updateUrls).toEqual(["https://raw.githubusercontent.com/ChinaYosh007/xuexitong-shuake-plugin/main/updates/update.json"]);
   });

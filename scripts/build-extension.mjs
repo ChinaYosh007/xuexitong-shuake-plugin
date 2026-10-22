@@ -17,7 +17,7 @@
  * The placeholder Origin https://study.example.invalid from manifest.base.json must always be
  * replaced. Local builds default to http://127.0.0.1:8080; non-loopback origins require HTTPS.
  */
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -230,6 +230,34 @@ async function assertOutputs() {
   return manifest;
 }
 
+const SOUNDS_SRC_DIR = path.join(EXTENSION_DIR, "sounds");
+const SOUND_EXTENSIONS = [".mp3", ".wav", ".ogg"];
+
+/**
+ * 0.2.8 §7 E6: copy the user/developer alarm sounds from apps/extension/sounds into dist/sounds so
+ * the extension page can play `chrome.runtime.getURL("sounds/error.mp3")`. Missing/empty is fine —
+ * the code falls back to the built-in synthetic beep — so this never throws.
+ */
+async function copySoundAssets() {
+  const copied = [];
+  let entries;
+  try {
+    entries = await readdir(SOUNDS_SRC_DIR, { withFileTypes: true });
+  } catch {
+    return copied;
+  }
+  const sounds = entries.filter(entry => entry.isFile() && SOUND_EXTENSIONS.includes(path.extname(entry.name).toLowerCase()));
+  if (sounds.length === 0) return copied;
+  await mkdir(path.join(DIST_DIR, "sounds"), { recursive: true });
+  for (const entry of sounds) {
+    const data = await readFile(path.join(SOUNDS_SRC_DIR, entry.name));
+    if (data.length === 0) continue;
+    await writeFile(path.join(DIST_DIR, "sounds", entry.name), data);
+    copied.push({ file: `sounds/${entry.name}`, bytes: data.length });
+  }
+  return copied;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -305,6 +333,7 @@ async function main() {
 
   await writeFile(path.join(DIST_DIR, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   await writeFile(path.join(DIST_DIR, "font-reference-LICENSE.txt"), await readFile(path.join(EXTENSION_DIR, "src", "automation", "data", "LICENSE.txt")));
+  const copiedSounds = await copySoundAssets();
   const verifiedManifest = await assertOutputs();
 
   const files = [];
@@ -312,6 +341,7 @@ async function main() {
     const info = await stat(path.join(DIST_DIR, relative));
     files.push({ file: relative, bytes: info.size });
   }
+  files.push(...copiedSounds);
   console.log(
     JSON.stringify(
       {

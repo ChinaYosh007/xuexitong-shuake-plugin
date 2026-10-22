@@ -13,3 +13,14 @@ export function isWorkPagePath(pathname: string): boolean {
 export function isExamPath(pathname: string): boolean {
   return /\/exam(?:-|\/|$)|\/examination/i.test(pathname);
 }
+
+export const DISCUSSION_ORIGIN = "https://groupweb.chaoxing.com";
+
+/** Observed discussion detail page; other groupweb routes remain unsupported. */
+export function isDiscussionPageUrl(input: string): boolean {
+  try {
+    const url = new URL(input);
+    return !url.username && !url.password && url.origin === DISCUSSION_ORIGIN &&
+      /^\/course\/topic\/v3\/bbs\/[A-Za-z0-9-]+\/[A-Za-z0-9-]+\/replysList\/?$/.test(url.pathname);
+  } catch { return false; }
+}
